@@ -20,6 +20,8 @@ const props = defineProps({
 const form = useForm({
     tipo: props.tipos[0] ?? 'constitutiva',
     fecha_registro: '',
+    rpc_fecha_inscripcion: '',
+    fecha_inscripcion: '',
     documento: null,
     rpc_folio: '',
     rpc_lugar: '',
@@ -92,6 +94,20 @@ const submit = () => {
                                     <InputLabel value="RPC Lugar" />
                                     <TextInput v-model="form.rpc_lugar" class="mt-1 block w-full" />
                                     <InputError class="mt-2" :message="form.errors.rpc_lugar" />
+                                </div>
+                            </div>
+
+                            <div class="grid gap-6 md:grid-cols-2">
+                                <div>
+                                    <InputLabel value="RPC Fecha de inscripción" />
+                                    <TextInput v-model="form.rpc_fecha_inscripcion" type="date" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.rpc_fecha_inscripcion" />
+                                </div>
+
+                                <div>
+                                    <InputLabel value="Fecha de inscripción" />
+                                    <TextInput v-model="form.fecha_inscripcion" type="date" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.fecha_inscripcion" />
                                 </div>
                             </div>
 

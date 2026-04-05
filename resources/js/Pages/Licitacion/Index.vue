@@ -55,7 +55,10 @@ defineProps({
                             <p class="mt-1 text-sm text-gray-500">
                                 Bases: {{ licitacion.bases_document_original_name || 'Pendiente de carga' }}
                             </p>
-                            <div class="mt-4 flex justify-end">
+                            <div class="mt-4 flex justify-end gap-2">
+                                <Link :href="route('licitacion.edit', licitacion.id)">
+                                    <Button label="Editar" icon="pi pi-pencil" size="small" severity="secondary" />
+                                </Link>
                                 <Link :href="route('licitacion.show', licitacion.id)">
                                     <Button label="Abrir expediente" icon="pi pi-folder-open" size="small" />
                                 </Link>

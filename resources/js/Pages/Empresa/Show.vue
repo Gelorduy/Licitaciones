@@ -87,6 +87,13 @@ defineProps({
                                             <span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
                                                 {{ acta.document_index?.status || 'pendiente' }}
                                             </span>
+                                            <div
+                                                v-if="acta.document_index?.metadata?.has_required_missing_fields"
+                                                class="mt-2 rounded-md bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
+                                                :title="(acta.document_index?.metadata?.required_missing_fields || []).join(', ')"
+                                            >
+                                                Faltan {{ (acta.document_index?.metadata?.required_missing_fields || []).length }} campo(s) obligatorios
+                                            </div>
                                         </td>
                                         <td class="px-4 py-3 text-sm">
                                             <div class="flex flex-wrap gap-2">

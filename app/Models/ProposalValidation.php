@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ProposalValidation extends Model
 {
@@ -40,5 +41,10 @@ class ProposalValidation extends Model
     public function licitacion(): BelongsTo
     {
         return $this->belongsTo(Licitacion::class);
+    }
+
+    public function findings(): HasMany
+    {
+        return $this->hasMany(ProposalValidationFinding::class)->orderBy('id');
     }
 }

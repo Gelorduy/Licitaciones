@@ -16,6 +16,26 @@ const applyOverride = () => {
     overrideForm.post(route('validacion.override', props.validation.id));
 };
 
+const persistedFindings = props.validation.findings || [];
+
+const criticalFindings = persistedFindings.length
+    ? persistedFindings.filter((finding) => finding.severity === 'critical')
+    : (props.validation.report?.issues || []).map((message, idx) => ({
+        id: `legacy-critical-${idx}`,
+        rule_code: 'LEGACY',
+        category: 'cumplimiento',
+        message,
+    }));
+
+const warningFindings = persistedFindings.length
+    ? persistedFindings.filter((finding) => finding.severity === 'warning')
+    : (props.validation.report?.warnings || []).map((message, idx) => ({
+        id: `legacy-warning-${idx}`,
+        rule_code: 'LEGACY',
+        category: 'seguimiento',
+        message,
+    }));
+
 const badgeClass = ({
     green: 'bg-emerald-100 text-emerald-700',
     yellow: 'bg-amber-100 text-amber-700',
@@ -76,10 +96,11 @@ const badgeClass = ({
                         <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
                             <h3 class="text-base font-semibold text-gray-900">Hallazgos críticos</h3>
                             <ul class="mt-4 space-y-2 text-sm text-gray-700">
-                                <li v-for="(issue, idx) in validation.report?.issues || []" :key="`issue-${idx}`" class="rounded-lg bg-red-50 px-3 py-2 text-red-700">
-                                    {{ issue }}
+                                <li v-for="finding in criticalFindings" :key="finding.id" class="rounded-lg bg-red-50 px-3 py-2 text-red-700">
+                                    <p class="font-medium">{{ finding.rule_code }} · {{ finding.category }}</p>
+                                    <p class="mt-1">{{ finding.message }}</p>
                                 </li>
-                                <li v-if="!(validation.report?.issues || []).length" class="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
+                                <li v-if="!criticalFindings.length" class="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
                                     Sin hallazgos críticos.
                                 </li>
                             </ul>
@@ -88,10 +109,11 @@ const badgeClass = ({
                         <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
                             <h3 class="text-base font-semibold text-gray-900">Observaciones</h3>
                             <ul class="mt-4 space-y-2 text-sm text-gray-700">
-                                <li v-for="(warning, idx) in validation.report?.warnings || []" :key="`warning-${idx}`" class="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
-                                    {{ warning }}
+                                <li v-for="finding in warningFindings" :key="finding.id" class="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
+                                    <p class="font-medium">{{ finding.rule_code }} · {{ finding.category }}</p>
+                                    <p class="mt-1">{{ finding.message }}</p>
                                 </li>
-                                <li v-if="!(validation.report?.warnings || []).length" class="rounded-lg bg-slate-50 px-3 py-2 text-slate-700">
+                                <li v-if="!warningFindings.length" class="rounded-lg bg-slate-50 px-3 py-2 text-slate-700">
                                     Sin observaciones pendientes.
                                 </li>
                             </ul>

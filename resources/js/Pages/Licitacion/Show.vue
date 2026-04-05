@@ -49,6 +49,14 @@ defineProps({
                         </div>
                     </div>
 
+                    <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div class="flex flex-wrap gap-3">
+                            <Link :href="route('licitacion.edit', licitacion.id)">
+                                <Button label="Editar expediente" icon="pi pi-pencil" />
+                            </Link>
+                        </div>
+                    </div>
+
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" v-if="licitacion.letterhead">
                         <h3 class="text-base font-semibold text-gray-900">Hoja membretada seleccionada</h3>
                         <p class="mt-2 text-sm text-gray-700">{{ licitacion.letterhead.title }}</p>

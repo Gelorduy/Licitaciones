@@ -38,6 +38,8 @@ class ActaController extends Controller
         $validated = $request->validate([
             'tipo' => ['required', 'in:constitutiva,modificacion,poderes'],
             'fecha_registro' => ['nullable', 'date'],
+            'rpc_fecha_inscripcion' => ['nullable', 'date'],
+            'fecha_inscripcion' => ['nullable', 'date'],
             'documento' => ['required', 'file', 'mimes:pdf', 'max:20480'],
             'rpc_folio' => ['nullable', 'string', 'max:255'],
             'rpc_lugar' => ['nullable', 'string', 'max:255'],
@@ -92,6 +94,8 @@ class ActaController extends Controller
     {
         abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
 
+        $acta->load('documentIndex');
+
         return Inertia::render('Acta/Edit', [
             'company' => [
                 'id' => $company->id,
@@ -111,6 +115,8 @@ class ActaController extends Controller
         $validated = $request->validate([
             'tipo' => ['required', 'in:constitutiva,modificacion,poderes'],
             'fecha_registro' => ['nullable', 'date'],
+            'rpc_fecha_inscripcion' => ['nullable', 'date'],
+            'fecha_inscripcion' => ['nullable', 'date'],
             'documento' => ['nullable', 'file', 'mimes:pdf', 'max:20480'],
             'rpc_folio' => ['nullable', 'string', 'max:255'],
             'rpc_lugar' => ['nullable', 'string', 'max:255'],
@@ -172,6 +178,23 @@ class ActaController extends Controller
         return redirect()
             ->route('empresa.show', $company)
             ->with('success', 'Acta actualizada correctamente.');
+    }
+
+    public function reextract(Request $request, Company $company, Acta $acta): RedirectResponse
+    {
+        abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
+
+        abort_if(! $acta->documento_path, 422, 'El acta no tiene archivo para reextraer.');
+
+        ProcessUploadedPdfJob::dispatch(Acta::class, $acta->id, 'acta', $request->user()->id);
+
+        SystemEventLogger::log('acta.reextract_requested', [
+            'company_id' => $company->id,
+            'acta_id' => $acta->id,
+            'file_name' => $acta->documento_original_name,
+        ], $request, null, Acta::class, $acta->id);
+
+        return back()->with('success', 'Reextracción de campos solicitada. Procesando en segundo plano.');
     }
 
     public function viewFile(Request $request, Company $company, Acta $acta): StreamedResponse

@@ -67,6 +67,8 @@ class ValidacionController extends Controller
             'ready_at' => null,
         ]);
 
+        $validationService->persistFindings($validation, $report);
+
         try {
             $workflow->transition(
                 model: $validation,
@@ -90,7 +92,7 @@ class ValidacionController extends Controller
     {
         abort_unless($validation->user_id === $request->user()->id, 403);
 
-        $validation->load(['licitacion.company', 'licitacion.regulations', 'licitacion.letterhead']);
+        $validation->load(['licitacion.company', 'licitacion.regulations', 'licitacion.letterhead', 'findings.owner']);
 
         return Inertia::render('Validacion/Show', [
             'validation' => $validation,
@@ -116,6 +118,8 @@ class ValidacionController extends Controller
             'audited_at' => now(),
             'ready_at' => null,
         ]);
+
+        $validationService->persistFindings($validation, $report);
 
         try {
             $workflow->transition(
@@ -178,7 +182,7 @@ class ValidacionController extends Controller
 
         abort_unless($validation->status === 'ready_for_export' || $validation->override_applied, 422, 'La validación aún no está lista para exportación.');
 
-        $validation->load(['licitacion.company', 'licitacion.regulations']);
+        $validation->load(['licitacion.company', 'licitacion.regulations', 'findings']);
 
         $tmpPath = tempnam(sys_get_temp_dir(), 'validation_zip_');
         $zipPath = $tmpPath.'.zip';
@@ -194,9 +198,13 @@ class ValidacionController extends Controller
             'traffic_light' => $validation->traffic_light,
             'override_applied' => $validation->override_applied,
             'override_reason' => $validation->override_reason,
+            'findings_count' => $validation->findings->count(),
+            'critical_findings_count' => $validation->findings->where('severity', 'critical')->count(),
+            'warning_findings_count' => $validation->findings->where('severity', 'warning')->count(),
         ];
 
         $zip->addFromString('report.json', $report ?: '{}');
+        $zip->addFromString('findings.json', $validation->findings->toJson(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         $zip->addFromString('summary.json', json_encode($summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         $zip->close();
 

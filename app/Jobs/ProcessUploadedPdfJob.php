@@ -75,8 +75,20 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 throw new \RuntimeException('No text extracted from PDF.');
             }
 
-            $metadata = $metadataExtractor->extract($this->documentType, $text);
             $chunks = $this->chunkText($text);
+
+            $metadata = $metadataExtractor->extract($this->documentType, $text, [
+                'namespace' => 'licitaciones-'.$this->documentType,
+                'document_id' => $this->documentId,
+                'document_type' => $this->documentType,
+                'user_id' => $this->userId,
+                'chunks' => $chunks,
+            ]);
+
+            $structuredSummary = $this->structuredSummaryForIndex($this->documentType, $metadata);
+            if ($structuredSummary !== null) {
+                array_unshift($chunks, $structuredSummary);
+            }
 
             $index->update([
                 'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
@@ -175,18 +187,62 @@ class ProcessUploadedPdfJob implements ShouldQueue
     private function applyExtractedMetadata(object $document, array $metadata): void
     {
         if ($document instanceof Acta) {
-            $document->fill(array_filter([
-                'notaria_numero' => $document->notaria_numero ?: ($metadata['notaria_numero'] ?? null),
-                'notaria_lugar' => $document->notaria_lugar ?: ($metadata['notaria_lugar'] ?? null),
-                'notario_nombre' => $document->notario_nombre ?: ($metadata['notario_nombre'] ?? null),
-                'escritura_numero' => $document->escritura_numero ?: ($metadata['escritura_numero'] ?? null),
-                'rpc_folio' => $document->rpc_folio ?: ($metadata['rpc_folio'] ?? null),
-                'rpc_lugar' => $document->rpc_lugar ?: ($metadata['rpc_lugar'] ?? null),
-                'fecha_registro' => $document->fecha_registro ?: ($metadata['fecha_registro'] ?? null),
-                'fecha_inscripcion' => $document->fecha_inscripcion ?: ($metadata['fecha_inscripcion'] ?? null),
-                'acto' => $document->acto ?: ($metadata['acto'] ?? null),
-            ]));
-            $document->save();
+            $updates = [];
+
+            if (! $document->notaria_numero && ! empty($metadata['notaria_numero'])) {
+                $updates['notaria_numero'] = $metadata['notaria_numero'];
+            }
+            if (! $document->notaria_lugar && ! empty($metadata['notaria_lugar'])) {
+                $updates['notaria_lugar'] = $metadata['notaria_lugar'];
+            }
+            if (! $document->notario_nombre && ! empty($metadata['notario_nombre'])) {
+                $updates['notario_nombre'] = $metadata['notario_nombre'];
+            }
+            if (! $document->escritura_numero && ! empty($metadata['escritura_numero'])) {
+                $updates['escritura_numero'] = $metadata['escritura_numero'];
+            }
+            if (! $document->libro_numero && ! empty($metadata['libro_numero'])) {
+                $updates['libro_numero'] = $metadata['libro_numero'];
+            }
+            if (! $document->rpc_folio && ! empty($metadata['rpc_folio'])) {
+                $updates['rpc_folio'] = $metadata['rpc_folio'];
+            }
+            if (! $document->rpc_lugar && ! empty($metadata['rpc_lugar'])) {
+                $updates['rpc_lugar'] = $metadata['rpc_lugar'];
+            }
+            if (! $document->rpc_fecha_inscripcion && ! empty($metadata['rpc_fecha_inscripcion'])) {
+                $updates['rpc_fecha_inscripcion'] = $metadata['rpc_fecha_inscripcion'];
+            }
+            if (! $document->fecha_registro && ! empty($metadata['fecha_registro'])) {
+                $updates['fecha_registro'] = $metadata['fecha_registro'];
+            }
+            if (! $document->fecha_inscripcion && ! empty($metadata['fecha_inscripcion'])) {
+                $updates['fecha_inscripcion'] = $metadata['fecha_inscripcion'];
+            }
+            if (! $document->acto && ! empty($metadata['acto'])) {
+                $updates['acto'] = $metadata['acto'];
+            }
+
+            if (empty($document->apoderados) && ! empty($metadata['apoderados']) && is_array($metadata['apoderados'])) {
+                $updates['apoderados'] = $metadata['apoderados'];
+            }
+
+            if (empty($document->participacion_accionaria) && ! empty($metadata['participacion_accionaria']) && is_array($metadata['participacion_accionaria'])) {
+                $updates['participacion_accionaria'] = $metadata['participacion_accionaria'];
+            }
+
+            if (empty($document->consejo_administracion) && ! empty($metadata['consejo_administracion']) && is_array($metadata['consejo_administracion'])) {
+                $updates['consejo_administracion'] = $metadata['consejo_administracion'];
+            }
+
+            if (empty($document->direccion_empresa) && ! empty($metadata['direccion_empresa']) && is_array($metadata['direccion_empresa'])) {
+                $updates['direccion_empresa'] = $metadata['direccion_empresa'];
+            }
+
+            if ($updates !== []) {
+                $document->fill($updates);
+                $document->save();
+            }
         }
 
         if ($document instanceof OpinionCumplimiento) {
@@ -228,5 +284,59 @@ class ProcessUploadedPdfJob implements ShouldQueue
         }
 
         return array_values(array_filter($chunks));
+    }
+
+    private function structuredSummaryForIndex(string $documentType, array $metadata): ?string
+    {
+        if ($documentType !== 'acta') {
+            return null;
+        }
+
+        $apoderados = [];
+        foreach (($metadata['apoderados'] ?? []) as $apoderado) {
+            if (! is_array($apoderado)) {
+                continue;
+            }
+
+            $apoderados[] = implode(' | ', array_filter([
+                'Nombre: '.($apoderado['nombre_completo'] ?? null),
+                'INE: '.($apoderado['ine'] ?? null),
+                'Poder: '.($apoderado['poder_documento'] ?? null),
+                'Facultades: '.($apoderado['facultades_otorgadas'] ?? null),
+            ]));
+        }
+
+        $participacion = [];
+        foreach (($metadata['participacion_accionaria'] ?? []) as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $participacion[] = trim((string) (($item['socio'] ?? 'Socio').' '.($item['porcentaje'] ?? '')));
+        }
+
+        $requiredMissing = implode(', ', $metadata['required_missing_fields'] ?? []);
+
+        $lines = array_filter([
+            'RESUMEN ESTRUCTURADO DEL ACTA',
+            'Fecha de registro: '.($metadata['fecha_registro'] ?? 'N/A'),
+            'RPC Folio: '.($metadata['rpc_folio'] ?? 'N/A'),
+            'RPC Fecha inscripción: '.($metadata['rpc_fecha_inscripcion'] ?? 'N/A'),
+            'RPC Lugar: '.($metadata['rpc_lugar'] ?? 'N/A'),
+            'Notaría número: '.($metadata['notaria_numero'] ?? 'N/A'),
+            'Notaría lugar: '.($metadata['notaria_lugar'] ?? 'N/A'),
+            'Notario: '.($metadata['notario_nombre'] ?? 'N/A'),
+            'Escritura número: '.($metadata['escritura_numero'] ?? 'N/A'),
+            'Libro número: '.($metadata['libro_numero'] ?? 'N/A'),
+            'Fecha inscripción: '.($metadata['fecha_inscripcion'] ?? 'N/A'),
+            'Acto: '.($metadata['acto'] ?? 'N/A'),
+            'Apoderados: '.(empty($apoderados) ? 'N/A' : implode(' || ', $apoderados)),
+            'Participación accionaria: '.(empty($participacion) ? 'N/A' : implode(' || ', $participacion)),
+            'Consejo de administración: '.(empty($metadata['consejo_administracion']) ? 'N/A' : implode(' | ', $metadata['consejo_administracion'])),
+            'Dirección de empresa: '.(empty($metadata['direccion_empresa']) ? 'N/A' : implode(' | ', $metadata['direccion_empresa'])),
+            'Campos obligatorios faltantes: '.($requiredMissing !== '' ? $requiredMissing : 'ninguno'),
+        ]);
+
+        return implode("\n", $lines);
     }
 }

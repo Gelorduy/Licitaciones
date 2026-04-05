@@ -28,6 +28,8 @@ const props = defineProps({
 const form = useForm({
     tipo: props.acta.tipo ?? (props.tipos[0] ?? 'constitutiva'),
     fecha_registro: props.acta.fecha_registro ?? '',
+    rpc_fecha_inscripcion: props.acta.rpc_fecha_inscripcion ?? '',
+    fecha_inscripcion: props.acta.fecha_inscripcion ?? '',
     documento: null,
     rpc_folio: props.acta.rpc_folio ?? '',
     rpc_lugar: props.acta.rpc_lugar ?? '',
@@ -57,6 +59,16 @@ const submit = () => {
         forceFormData: true,
     });
 };
+
+const missingRequiredFields = props.acta.document_index?.metadata?.required_missing_fields || [];
+const hasExtractionAlerts = props.acta.document_index?.metadata?.has_required_missing_fields;
+const extractionSource = props.acta.document_index?.metadata?.extraction_source || null;
+
+const reextractForm = useForm({});
+
+const requestReextract = () => {
+    reextractForm.post(route('acta.reextract', [props.company.id, props.acta.id]));
+};
 </script>
 
 <template>
@@ -73,6 +85,36 @@ const submit = () => {
             <div class="py-10">
                 <div class="mx-auto max-w-4xl sm:px-6 lg:px-8">
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div v-if="hasExtractionAlerts" class="mb-5 rounded-lg border border-red-200 bg-red-50 p-4">
+                            <h3 class="text-sm font-semibold text-red-800">Alerta de extracción automática</h3>
+                            <p class="mt-1 text-sm text-red-700">
+                                El sistema no encontró todos los campos obligatorios del acta. Revísalos y complétalos manualmente.
+                            </p>
+                            <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-red-700">
+                                <li v-for="field in missingRequiredFields" :key="field">{{ field }}</li>
+                            </ul>
+                        </div>
+
+                        <div class="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600" v-if="extractionSource">
+                            Fuente de extracción detectada: <span class="font-medium">{{ extractionSource }}</span>
+                        </div>
+
+                        <div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                            <div class="flex items-center justify-between gap-3">
+                                <p class="text-xs text-amber-800">
+                                    Si ajustas el prompt/modelo o subes un mejor OCR, vuelve a ejecutar la extracción automática.
+                                </p>
+                                <Button
+                                    label="Re-ejecutar extracción AI"
+                                    icon="pi pi-refresh"
+                                    size="small"
+                                    severity="warning"
+                                    :loading="reextractForm.processing"
+                                    @click="requestReextract"
+                                />
+                            </div>
+                        </div>
+
                         <form class="space-y-6" @submit.prevent="submit">
                             <div class="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                                 Archivo actual:
@@ -146,6 +188,20 @@ const submit = () => {
 
                             <div class="grid gap-6 md:grid-cols-2">
                                 <div>
+                                    <InputLabel value="RPC Fecha de inscripción" />
+                                    <TextInput v-model="form.rpc_fecha_inscripcion" type="date" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.rpc_fecha_inscripcion" />
+                                </div>
+
+                                <div>
+                                    <InputLabel value="Fecha de inscripción" />
+                                    <TextInput v-model="form.fecha_inscripcion" type="date" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.fecha_inscripcion" />
+                                </div>
+                            </div>
+
+                            <div class="grid gap-6 md:grid-cols-2">
+                                <div>
                                     <InputLabel value="Notaría Número" />
                                     <TextInput v-model="form.notaria_numero" class="mt-1 block w-full" />
                                     <InputError class="mt-2" :message="form.errors.notaria_numero" />
@@ -170,6 +226,35 @@ const submit = () => {
                                     <TextInput v-model="form.acto" class="mt-1 block w-full" />
                                     <InputError class="mt-2" :message="form.errors.acto" />
                                 </div>
+                            </div>
+
+                            <div class="grid gap-6 md:grid-cols-2">
+                                <div>
+                                    <InputLabel value="Libro Número" />
+                                    <TextInput v-model="form.libro_numero" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.libro_numero" />
+                                </div>
+                            </div>
+
+                            <div v-if="Array.isArray(acta.apoderados) && acta.apoderados.length" class="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                                <h4 class="text-sm font-semibold text-blue-900">Apoderados extraídos</h4>
+                                <div class="mt-2 space-y-2 text-xs text-blue-800">
+                                    <div v-for="(apoderado, idx) in acta.apoderados" :key="idx" class="rounded border border-blue-200 bg-white p-2">
+                                        <p><span class="font-medium">Nombre:</span> {{ apoderado.nombre_completo || 'N/A' }}</p>
+                                        <p><span class="font-medium">INE:</span> {{ apoderado.ine || 'N/A' }}</p>
+                                        <p><span class="font-medium">Poder:</span> {{ apoderado.poder_documento || 'N/A' }}</p>
+                                        <p><span class="font-medium">Facultades:</span> {{ apoderado.facultades_otorgadas || 'N/A' }}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div v-if="Array.isArray(acta.participacion_accionaria) && acta.participacion_accionaria.length" class="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+                                <h4 class="text-sm font-semibold text-emerald-900">Participación accionaria extraída</h4>
+                                <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-emerald-800">
+                                    <li v-for="(item, idx) in acta.participacion_accionaria" :key="idx">
+                                        {{ item.socio || 'Socio' }}: {{ item.porcentaje || 'N/A' }}
+                                    </li>
+                                </ul>
                             </div>
 
                             <div class="flex justify-end gap-3">

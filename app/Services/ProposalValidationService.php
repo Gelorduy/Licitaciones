@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Licitacion;
+use App\Models\ProposalValidation;
 use Carbon\Carbon;
 
 class ProposalValidationService
@@ -95,10 +96,30 @@ class ProposalValidationService
             $warnings[] = 'Checklist pendiente: '.($item['label'] ?? 'Punto sin descripción');
         }
 
+        $findings = [];
+
+        foreach ($issues as $issue) {
+            $findings[] = [
+                'severity' => 'critical',
+                'category' => 'cumplimiento',
+                'rule_code' => 'CHK-CRIT',
+                'message' => $issue,
+            ];
+        }
+
+        foreach ($warnings as $warning) {
+            $findings[] = [
+                'severity' => 'warning',
+                'category' => 'seguimiento',
+                'rule_code' => 'CHK-WARN',
+                'message' => $warning,
+            ];
+        }
+
         $trafficLight = 'green';
-        if (! empty($issues)) {
+        if (count($issues) > 0) {
             $trafficLight = 'red';
-        } elseif (! empty($warnings)) {
+        } elseif (count($warnings) > 0) {
             $trafficLight = 'yellow';
         }
 
@@ -111,8 +132,24 @@ class ProposalValidationService
                 'traffic_light' => $trafficLight,
             ],
             'checks' => $checks,
+            'findings' => $findings,
             'issues' => $issues,
             'warnings' => $warnings,
         ];
+    }
+
+    public function persistFindings(ProposalValidation $validation, array $report): void
+    {
+        $validation->findings()->delete();
+
+        foreach ($report['findings'] ?? [] as $finding) {
+            $validation->findings()->create([
+                'severity' => $finding['severity'] ?? 'info',
+                'category' => $finding['category'] ?? 'general',
+                'rule_code' => $finding['rule_code'] ?? 'GEN-000',
+                'message' => $finding['message'] ?? 'Hallazgo sin detalle.',
+                'status' => 'open',
+            ]);
+        }
     }
 }

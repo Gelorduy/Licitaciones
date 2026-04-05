@@ -173,6 +173,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/empresas/{company}/actas', [ActaController::class, 'store'])->name('acta.store');
     Route::get('/empresas/{company}/actas/{acta}/editar', [ActaController::class, 'edit'])->name('acta.edit');
     Route::put('/empresas/{company}/actas/{acta}', [ActaController::class, 'update'])->name('acta.update');
+    Route::post('/empresas/{company}/actas/{acta}/reextraer', [ActaController::class, 'reextract'])->name('acta.reextract');
     Route::get('/empresas/{company}/actas/{acta}/archivo', [ActaController::class, 'viewFile'])->name('acta.file.view');
     Route::get('/empresas/{company}/actas/{acta}/archivo/descargar', [ActaController::class, 'downloadFile'])->name('acta.file.download');
     Route::get('/empresas/{company}/actas/{acta}/texto-ocr', [ActaController::class, 'viewExtractedText'])->name('acta.text.view');
@@ -215,6 +216,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/licitaciones', [LicitacionController::class, 'index'])->name('licitacion.index');
     Route::get('/licitaciones/crear', [LicitacionController::class, 'create'])->name('licitacion.create');
     Route::post('/licitaciones', [LicitacionController::class, 'store'])->name('licitacion.store');
+    Route::get('/licitaciones/{licitacion}/editar', [LicitacionController::class, 'edit'])->name('licitacion.edit');
+    Route::put('/licitaciones/{licitacion}', [LicitacionController::class, 'update'])->name('licitacion.update');
     Route::get('/licitaciones/{licitacion}', [LicitacionController::class, 'show'])->name('licitacion.show');
     Route::get('/validacion', [ValidacionController::class, 'index'])->name('validacion.index');
     Route::post('/validacion', [ValidacionController::class, 'store'])->name('validacion.store');
