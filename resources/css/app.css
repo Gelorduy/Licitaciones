@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/forms";
+
+@theme {
+    --font-family-sans: 'Figtree', ui-sans-serif, system-ui, sans-serif,
+        'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+/* Explicit light-mode base so OS dark theme never bleeds into the app */
+html {
+    color-scheme: light;
+    background-color: #f3f4f6;
+    color: #111827;
+}
+
