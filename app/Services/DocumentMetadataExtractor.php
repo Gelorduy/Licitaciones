@@ -47,18 +47,36 @@ class DocumentMetadataExtractor
 
         $ragContext = $this->buildActaRagContext($options, $text);
         $llmExtraction = $this->extractActaWithLlm($text, $ragContext);
+        $retryExtraction = [];
 
         $merged = $this->mergeActaExtraction($regexExtraction, $llmExtraction);
         $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+
+        // Retry once with focused retrieval queries only for missing fields.
+        if (! empty($merged['required_missing_fields'])) {
+            $focusedRagContext = $this->buildFocusedActaRagContext($options, $text, $merged['required_missing_fields']);
+            $retryExtraction = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields']);
+            $merged = $this->mergeActaExtraction($merged, $retryExtraction);
+            $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+            $ragContext['matches'] = array_merge($ragContext['matches'] ?? [], $focusedRagContext['matches'] ?? []);
+        }
+
         $merged['has_required_missing_fields'] = count($merged['required_missing_fields']) > 0;
-        $merged['extraction_source'] = $llmExtraction !== [] ? 'llm+regex' : 'regex';
-        $merged['rag_match_count'] = count($ragContext['matches'] ?? []);
+        $source = 'regex';
+        if ($llmExtraction !== []) {
+            $source .= '+llm';
+        }
+        if ($retryExtraction !== []) {
+            $source .= '+llm_retry';
+        }
+        $merged['extraction_source'] = $source;
+        $merged['rag_match_count'] = $this->countRagSnippets($ragContext);
         $merged['rag_queries_used'] = array_keys($ragContext['matches'] ?? []);
 
         return $merged;
     }
 
-    private function extractActaWithLlm(string $text, array $ragContext = []): array
+    private function extractActaWithLlm(string $text, array $ragContext = [], array $missingFields = []): array
     {
         $apiKey = config('services.openai.api_key');
 
@@ -132,6 +150,9 @@ class DocumentMetadataExtractor
         ];
 
         $ragBlock = $this->formatRagContextForPrompt($ragContext);
+        $missingBlock = empty($missingFields)
+            ? 'Sin campos faltantes previos.'
+            : implode(', ', $missingFields);
 
         try {
             $response = Http::withToken($apiKey)
@@ -150,11 +171,11 @@ class DocumentMetadataExtractor
                     'messages' => [
                         [
                             'role' => 'system',
-                            'content' => 'Eres un extractor legal de actas corporativas en Mexico. Tu trabajo es extraer campos SOLO usando la evidencia proporcionada en el contexto RAG. No inventes datos. Devuelve SOLO JSON valido. Si un campo no existe en la evidencia, usa null o arreglo vacio. Para fechas, usa YYYY-MM-DD cuando sea posible.',
+                            'content' => 'Eres un extractor legal de actas corporativas en Mexico. Extrae campos SOLO con evidencia del contexto RAG. No inventes datos. Para personas usa nombre completo tal cual aparece. Para fechas usa YYYY-MM-DD. Devuelve SOLO JSON valido ajustado al schema.',
                         ],
                         [
                             'role' => 'user',
-                            'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
+                            'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nCampos faltantes a priorizar en esta pasada:\n{$missingBlock}\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
                         ],
                     ],
                 ]);
@@ -206,10 +227,10 @@ class DocumentMetadataExtractor
         }
 
         $queries = [
-            'registro_rpc' => 'Fecha del registro, folio RPC, fecha de inscripción en registro público de comercio, lugar de inscripción',
-            'apoderados_facultades' => 'Apoderados legales, nombre completo, INE, poder, facultades otorgadas',
-            'accionistas_direccion' => 'Participación accionaria, socios, consejo de administración, miembros de dirección de la empresa',
-            'notaria_instrumento' => 'Número de notaría, lugar de notaría, nombre del notario, número de escritura, número de libro, fecha de inscripción, acto',
+            'registro_rpc' => 'fecha de registro del acta, folio mercantil rpc, fecha de inscripción en registro público de comercio, lugar de inscripción',
+            'apoderados_facultades' => 'apoderados legales, nombre completo, ine, documento de poder, facultades otorgadas, pleitos y cobranzas, administración, dominio',
+            'accionistas_direccion' => 'participación accionaria, socios accionistas, porcentajes, consejo de administración, director general, miembros de dirección',
+            'notaria_instrumento' => 'notaría número, lugar de notaría, nombre completo del notario, escritura número, libro número, fecha de inscripción, acto jurídico',
         ];
 
         $matches = [];
@@ -234,6 +255,65 @@ class DocumentMetadataExtractor
                 $matches['local_fallback'] = array_slice(array_values(array_filter($chunks)), 0, 8);
             } elseif ($text !== '') {
                 $matches['local_fallback'] = [Str::limit($text, 8000, '')];
+            }
+        }
+
+        return ['matches' => $matches];
+    }
+
+    private function buildFocusedActaRagContext(array $options, string $text, array $missingFields): array
+    {
+        $namespace = $options['namespace'] ?? null;
+        $documentId = $options['document_id'] ?? null;
+
+        if (! is_string($namespace) || $namespace === '' || ! is_numeric($documentId)) {
+            return ['matches' => []];
+        }
+
+        $fieldMap = [
+            'fecha_registro' => 'fecha de registro del acta',
+            'rpc_folio' => 'folio mercantil registro publico de comercio',
+            'rpc_fecha_inscripcion' => 'fecha de inscripcion en registro publico de comercio',
+            'rpc_lugar' => 'lugar de registro publico de comercio',
+            'notaria_numero' => 'numero de notaria',
+            'notaria_lugar' => 'lugar de notaria',
+            'notario_nombre' => 'nombre completo del notario',
+            'escritura_numero' => 'numero de escritura o instrumento',
+            'libro_numero' => 'numero de libro',
+            'fecha_inscripcion' => 'fecha de inscripcion del acto',
+            'acto' => 'acto juridico',
+            'apoderados' => 'apoderados legales nombre completo ine poder facultades otorgadas',
+            'participacion_accionaria' => 'participacion accionaria socios y porcentajes',
+        ];
+
+        $matches = [];
+
+        foreach ($missingFields as $field) {
+            $topField = explode('.', (string) $field)[0];
+            $queryText = $fieldMap[$topField] ?? null;
+
+            if (! $queryText) {
+                continue;
+            }
+
+            $snippets = $this->queryPineconeForActaContext(
+                queryText: $queryText,
+                namespace: $namespace,
+                documentId: (int) $documentId,
+                topK: 8,
+            );
+
+            if (! empty($snippets)) {
+                $matches['retry_'.$topField] = $snippets;
+            }
+        }
+
+        if (empty($matches)) {
+            $chunks = $options['chunks'] ?? [];
+            if (is_array($chunks) && ! empty($chunks)) {
+                $matches['retry_local_fallback'] = array_slice(array_values(array_filter($chunks)), 0, 10);
+            } elseif ($text !== '') {
+                $matches['retry_local_fallback'] = [Str::limit($text, 10000, '')];
             }
         }
 
@@ -323,6 +403,24 @@ class DocumentMetadataExtractor
         }
 
         return empty($blocks) ? 'Sin contexto recuperado.' : implode("\n\n", $blocks);
+    }
+
+    private function countRagSnippets(array $ragContext): int
+    {
+        $matches = $ragContext['matches'] ?? [];
+
+        if (! is_array($matches)) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($matches as $snippets) {
+            if (is_array($snippets)) {
+                $count += count($snippets);
+            }
+        }
+
+        return $count;
     }
 
     private function mergeActaExtraction(array $regexExtraction, array $llmExtraction): array
