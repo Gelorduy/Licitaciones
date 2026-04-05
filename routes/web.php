@@ -14,6 +14,7 @@ use App\Models\Acta;
 use App\Models\DocumentIndex;
 use App\Models\Licitacion;
 use App\Models\OpinionCumplimiento;
+use App\Models\ProposalValidation;
 use Carbon\Carbon;
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
@@ -59,6 +60,13 @@ Route::get('/dashboard', function (Request $request) {
 
     $documentsTotal = $actasCount + $opinionesCount + $regulationsCount;
     $documentsToday = $actasToday + $opinionesToday + $regulationsToday;
+    $validationsCount = ProposalValidation::query()->where('user_id', $user->id)->count();
+    $validationsToday = ProposalValidation::query()->where('user_id', $user->id)->where('created_at', '>=', $todayStart)->count();
+    $readyValidations = ProposalValidation::query()->where('user_id', $user->id)->where('status', 'ready_for_export')->count();
+    $openObservations = ProposalValidation::query()
+        ->where('user_id', $user->id)
+        ->whereIn('traffic_light', ['yellow', 'red'])
+        ->count();
 
     $indexes = DocumentIndex::query()
         ->where('user_id', $user->id)
@@ -138,13 +146,13 @@ Route::get('/dashboard', function (Request $request) {
             [
                 'title' => 'Modulo 4',
                 'subtitle' => 'Validacion y Cierre',
-                'status' => 'placeholder',
+                'status' => 'activo',
                 'route' => 'validacion.index',
-                'action' => 'Ver placeholder',
+                'action' => 'Abrir modulo',
                 'metrics' => [
-                    ['label' => 'Expedientes validados', 'value' => 0, 'today' => 0],
-                    ['label' => 'Observaciones abiertas', 'value' => 0, 'today' => 0],
-                    ['label' => 'Expedientes listos', 'value' => 0, 'today' => 0],
+                    ['label' => 'Expedientes validados', 'value' => $validationsCount, 'today' => $validationsToday],
+                    ['label' => 'Observaciones abiertas', 'value' => $openObservations, 'today' => 0],
+                    ['label' => 'Expedientes listos', 'value' => $readyValidations, 'today' => 0],
                 ],
             ],
         ],
@@ -209,6 +217,11 @@ Route::middleware('auth')->group(function () {
     Route::post('/licitaciones', [LicitacionController::class, 'store'])->name('licitacion.store');
     Route::get('/licitaciones/{licitacion}', [LicitacionController::class, 'show'])->name('licitacion.show');
     Route::get('/validacion', [ValidacionController::class, 'index'])->name('validacion.index');
+    Route::post('/validacion', [ValidacionController::class, 'store'])->name('validacion.store');
+    Route::get('/validacion/{validation}', [ValidacionController::class, 'show'])->name('validacion.show');
+    Route::post('/validacion/{validation}/auditar', [ValidacionController::class, 'runAudit'])->name('validacion.audit');
+    Route::post('/validacion/{validation}/override', [ValidacionController::class, 'applyOverride'])->name('validacion.override');
+    Route::get('/validacion/{validation}/export-usb', [ValidacionController::class, 'exportUsb'])->name('validacion.export-usb');
 });
 
 require __DIR__.'/auth.php';
