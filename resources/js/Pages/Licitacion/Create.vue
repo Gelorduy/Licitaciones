@@ -5,20 +5,27 @@ import InputLabel from '@/Components/InputLabel.vue';
 import TextInput from '@/Components/TextInput.vue';
 import { Head, Link, useForm } from '@inertiajs/vue3';
 import Button from 'primevue/button';
+import { computed } from 'vue';
 
 const props = defineProps({
     companies: { type: Array, default: () => [] },
     regulations: { type: Array, default: () => [] },
+    letterheads: { type: Array, default: () => [] },
     processTypes: { type: Array, default: () => [] },
 });
 
 const form = useForm({
     title: '',
     company_id: props.companies[0]?.id ?? null,
+    company_letterhead_id: null,
     process_type: props.processTypes[0] ?? 'publica',
     legal_signer_name: '',
     regulation_ids: [],
     bases_document: null,
+});
+
+const availableLetterheads = computed(() => {
+    return props.letterheads.filter((letterhead) => letterhead.company_id === form.company_id);
 });
 
 const submit = () => {
@@ -48,7 +55,7 @@ const submit = () => {
                             <div class="grid gap-6 md:grid-cols-2">
                                 <div>
                                     <InputLabel value="Empresa" />
-                                    <select v-model="form.company_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                                    <select v-model="form.company_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" @change="form.company_letterhead_id = null">
                                         <option v-for="company in companies" :key="company.id" :value="company.id">
                                             {{ company.nombre }} ({{ company.rfc }})
                                         </option>
@@ -63,6 +70,17 @@ const submit = () => {
                                     </select>
                                     <InputError class="mt-2" :message="form.errors.process_type" />
                                 </div>
+                            </div>
+
+                            <div>
+                                <InputLabel value="Hoja membretada" />
+                                <select v-model="form.company_letterhead_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                                    <option :value="null">Sin hoja membretada</option>
+                                    <option v-for="letterhead in availableLetterheads" :key="letterhead.id" :value="letterhead.id">
+                                        {{ letterhead.title }}{{ letterhead.is_default ? ' (predeterminada)' : '' }}
+                                    </option>
+                                </select>
+                                <InputError class="mt-2" :message="form.errors.company_letterhead_id" />
                             </div>
 
                             <div>

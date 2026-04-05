@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Company;
 use App\Services\SystemEventLogger;
+use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -65,7 +66,26 @@ class EmpresaController extends Controller
             'opinionesCumplimiento' => fn ($query) => $query->with('documentIndex')->latest('fecha_emision')->latest('id'),
             'financialStatements' => fn ($query) => $query->latest('year')->latest('month')->latest('id'),
             'taxDeclarations' => fn ($query) => $query->latest('year')->latest('month')->latest('id'),
+            'letterheads' => fn ($query) => $query->latest('is_default')->latest('id'),
         ]);
+
+        $today = Carbon::today();
+        $company->setRelation('opinionesCumplimiento', $company->opinionesCumplimiento->map(function ($opinion) use ($today) {
+            $vigencia = $opinion->vigencia_calculada ? Carbon::parse($opinion->vigencia_calculada) : null;
+            $daysToExpiry = $vigencia ? $today->diffInDays($vigencia, false) : null;
+
+            $expiryStatus = 'ok';
+            if ($daysToExpiry !== null && $daysToExpiry < 0) {
+                $expiryStatus = 'expired';
+            } elseif ($daysToExpiry !== null && $daysToExpiry <= 7) {
+                $expiryStatus = 'expiring';
+            }
+
+            $opinion->expiry_status = $expiryStatus;
+            $opinion->days_to_expiry = $daysToExpiry;
+
+            return $opinion;
+        }));
 
         return Inertia::render('Empresa/Show', [
             'company' => $company,

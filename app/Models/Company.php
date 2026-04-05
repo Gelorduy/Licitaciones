@@ -46,4 +46,9 @@ class Company extends Model
     {
         return $this->hasMany(Licitacion::class);
     }
+
+    public function letterheads(): HasMany
+    {
+        return $this->hasMany(CompanyLetterhead::class);
+    }
 }

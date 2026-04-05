@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -44,5 +45,10 @@ class User extends Authenticatable
     public function licitaciones(): HasMany
     {
         return $this->hasMany(Licitacion::class);
+    }
+
+    public function letterheads(): HasManyThrough
+    {
+        return $this->hasManyThrough(CompanyLetterhead::class, Company::class, 'user_id', 'company_id');
     }
 }

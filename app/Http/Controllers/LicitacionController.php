@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\AnalyzeBasesJob;
 use App\Models\Licitacion;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
@@ -16,7 +17,7 @@ class LicitacionController extends Controller
         return Inertia::render('Licitacion/Index', [
             'licitaciones' => $request->user()
                 ->licitaciones()
-                ->with(['company:id,nombre,rfc', 'regulations:id,title'])
+                ->with(['company:id,nombre,rfc', 'regulations:id,title', 'letterhead:id,title'])
                 ->latest()
                 ->get(),
         ]);
@@ -27,6 +28,7 @@ class LicitacionController extends Controller
         return Inertia::render('Licitacion/Create', [
             'companies' => $request->user()->companies()->orderBy('nombre')->get(['id', 'nombre', 'rfc']),
             'regulations' => $request->user()->regulations()->where('is_active', true)->orderBy('title')->get(['id', 'title', 'scope', 'country_code']),
+            'letterheads' => $request->user()->letterheads()->orderBy('is_default', 'desc')->orderBy('title')->get(['id', 'company_id', 'title', 'is_default']),
             'processTypes' => ['publica', 'privada'],
         ]);
     }
@@ -36,6 +38,7 @@ class LicitacionController extends Controller
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'company_id' => ['required', 'integer'],
+            'company_letterhead_id' => ['nullable', 'integer'],
             'process_type' => ['required', 'in:publica,privada'],
             'legal_signer_name' => ['nullable', 'string', 'max:255'],
             'regulation_ids' => ['nullable', 'array'],
@@ -48,6 +51,7 @@ class LicitacionController extends Controller
         $payload = [
             'user_id' => $request->user()->id,
             'company_id' => $company->id,
+            'company_letterhead_id' => null,
             'title' => $validated['title'],
             'process_type' => $validated['process_type'],
             'legal_signer_name' => $validated['legal_signer_name'] ?? null,
@@ -58,6 +62,11 @@ class LicitacionController extends Controller
                 ['label' => 'Bases cargadas', 'checked' => $request->hasFile('bases_document')],
             ],
         ];
+
+        if (! empty($validated['company_letterhead_id'])) {
+            $letterheadId = $company->letterheads()->where('id', $validated['company_letterhead_id'])->value('id');
+            $payload['company_letterhead_id'] = $letterheadId;
+        }
 
         if ($request->hasFile('bases_document')) {
             $path = null;
@@ -78,6 +87,10 @@ class LicitacionController extends Controller
             $licitacion->regulations()->sync($regulationIds);
         }
 
+        if ($request->hasFile('bases_document')) {
+            AnalyzeBasesJob::dispatch($licitacion->id);
+        }
+
         return redirect()->route('licitacion.show', $licitacion->id)->with('success', 'Expediente de licitación creado.');
     }
 
@@ -85,7 +98,7 @@ class LicitacionController extends Controller
     {
         abort_unless($licitacion->user_id === $request->user()->id, 403);
 
-        $licitacion->load(['company:id,nombre,rfc', 'regulations:id,title,scope,country_code']);
+        $licitacion->load(['company:id,nombre,rfc', 'regulations:id,title,scope,country_code', 'letterhead:id,title,city,contact_name,contact_position,phone,email,body_template']);
 
         return Inertia::render('Licitacion/Show', [
             'licitacion' => $licitacion,

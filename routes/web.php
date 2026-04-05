@@ -8,6 +8,7 @@ use App\Http\Controllers\ValidacionController;
 use App\Http\Controllers\ActaController;
 use App\Http\Controllers\DeclaracionImpuestoController;
 use App\Http\Controllers\EstadoFinancieroController;
+use App\Http\Controllers\HojaMembretadaController;
 use App\Http\Controllers\OpinionCumplimientoController;
 use App\Models\Acta;
 use App\Models\DocumentIndex;
@@ -188,6 +189,11 @@ Route::middleware('auth')->group(function () {
     Route::put('/empresas/{company}/declaraciones/{taxDeclaration}', [DeclaracionImpuestoController::class, 'update'])->name('declaracion.update');
     Route::get('/empresas/{company}/declaraciones/{taxDeclaration}/archivo', [DeclaracionImpuestoController::class, 'viewFile'])->name('declaracion.file.view');
     Route::get('/empresas/{company}/declaraciones/{taxDeclaration}/archivo/descargar', [DeclaracionImpuestoController::class, 'downloadFile'])->name('declaracion.file.download');
+
+    Route::get('/empresas/{company}/hoja-membretada/crear', [HojaMembretadaController::class, 'create'])->name('letterhead.create');
+    Route::post('/empresas/{company}/hoja-membretada', [HojaMembretadaController::class, 'store'])->name('letterhead.store');
+    Route::get('/empresas/{company}/hoja-membretada/{letterhead}/editar', [HojaMembretadaController::class, 'edit'])->name('letterhead.edit');
+    Route::put('/empresas/{company}/hoja-membretada/{letterhead}', [HojaMembretadaController::class, 'update'])->name('letterhead.update');
 
     Route::get('/regulaciones', [RegulacionController::class, 'index'])->name('regulacion.index');
     Route::get('/regulaciones/crear', [RegulacionController::class, 'create'])->name('regulacion.create');

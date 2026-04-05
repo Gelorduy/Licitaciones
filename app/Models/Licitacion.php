@@ -16,6 +16,7 @@ class Licitacion extends Model
     protected $fillable = [
         'user_id',
         'company_id',
+        'company_letterhead_id',
         'title',
         'process_type',
         'legal_signer_name',
@@ -40,6 +41,11 @@ class Licitacion extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function letterhead(): BelongsTo
+    {
+        return $this->belongsTo(CompanyLetterhead::class, 'company_letterhead_id');
     }
 
     public function regulations(): BelongsToMany

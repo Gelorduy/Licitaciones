@@ -37,6 +37,7 @@ defineProps({
                         <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                             <p class="text-sm uppercase tracking-wide text-gray-500">Estado</p>
                             <p class="mt-2 text-base font-semibold text-gray-900">{{ licitacion.status }}</p>
+                            <p class="mt-1 text-xs text-gray-500" v-if="licitacion.status === 'analyzing'">Analizando bases en segundo plano...</p>
                         </div>
                         <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                             <p class="text-sm uppercase tracking-wide text-gray-500">Regulaciones</p>
@@ -46,6 +47,16 @@ defineProps({
                             <p class="text-sm uppercase tracking-wide text-gray-500">Bases</p>
                             <p class="mt-2 text-sm font-medium text-gray-700">{{ licitacion.bases_document_original_name || 'Sin archivo' }}</p>
                         </div>
+                    </div>
+
+                    <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" v-if="licitacion.letterhead">
+                        <h3 class="text-base font-semibold text-gray-900">Hoja membretada seleccionada</h3>
+                        <p class="mt-2 text-sm text-gray-700">{{ licitacion.letterhead.title }}</p>
+                        <p class="mt-1 text-sm text-gray-600">
+                            {{ licitacion.letterhead.contact_name || 'Sin contacto' }}
+                            <span v-if="licitacion.letterhead.contact_position">· {{ licitacion.letterhead.contact_position }}</span>
+                        </p>
+                        <p class="mt-1 text-sm text-gray-600" v-if="licitacion.letterhead.city">{{ licitacion.letterhead.city }}</p>
                     </div>
 
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">

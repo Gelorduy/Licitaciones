@@ -47,6 +47,10 @@ defineProps({
                             <p class="text-sm uppercase tracking-wide text-gray-500">Declaraciones</p>
                             <p class="mt-2 text-3xl font-semibold text-gray-900">{{ company.tax_declarations.length }}</p>
                         </div>
+                        <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                            <p class="text-sm uppercase tracking-wide text-gray-500">Hojas Membretadas</p>
+                            <p class="mt-2 text-3xl font-semibold text-gray-900">{{ company.letterheads.length }}</p>
+                        </div>
                     </div>
 
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -145,7 +149,13 @@ defineProps({
                                         <td class="px-4 py-3 text-sm text-gray-700">{{ opinion.tipo.toUpperCase() }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-700">{{ opinion.estado }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-700">{{ opinion.fecha_emision }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-700">{{ opinion.vigencia_calculada }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-700">
+                                            <div class="flex items-center gap-2">
+                                                <span>{{ opinion.vigencia_calculada }}</span>
+                                                <span v-if="opinion.expiry_status === 'expired'" class="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">Vencida</span>
+                                                <span v-else-if="opinion.expiry_status === 'expiring'" class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">Por vencer ({{ opinion.days_to_expiry }}d)</span>
+                                            </div>
+                                        </td>
                                         <td class="px-4 py-3 text-sm text-gray-700">
                                             {{ opinion.documento_original_name || (opinion.documento_path ? opinion.documento_path.split('/').pop() : 'Sin archivo') }}
                                         </td>
@@ -296,6 +306,48 @@ defineProps({
                         </div>
                         <p v-else class="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-500">
                             Sin declaraciones registradas.
+                        </p>
+                    </div>
+
+                    <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div class="mb-4 flex items-center justify-between">
+                            <h3 class="text-base font-semibold text-gray-900">Hojas Membretadas</h3>
+                            <Link :href="route('letterhead.create', company.id)">
+                                <Button label="Nueva Hoja" icon="pi pi-plus" size="small" />
+                            </Link>
+                        </div>
+
+                        <div v-if="company.letterheads.length" class="overflow-hidden rounded-lg border border-gray-100">
+                            <table class="min-w-full divide-y divide-gray-100">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Título</th>
+                                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Contacto</th>
+                                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Ciudad</th>
+                                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Estado</th>
+                                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-100 bg-white">
+                                    <tr v-for="letterhead in company.letterheads" :key="letterhead.id">
+                                        <td class="px-4 py-3 text-sm text-gray-700">{{ letterhead.title }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-700">{{ letterhead.contact_name || 'N/A' }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-700">{{ letterhead.city || 'N/A' }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-700">
+                                            <span v-if="letterhead.is_default" class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">Predeterminada</span>
+                                            <span v-else class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">Activa</span>
+                                        </td>
+                                        <td class="px-4 py-3 text-sm">
+                                            <Link :href="route('letterhead.edit', [company.id, letterhead.id])">
+                                                <Button label="Editar" size="small" severity="info" text />
+                                            </Link>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p v-else class="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-500">
+                            Sin hojas membretadas registradas.
                         </p>
                     </div>
                 </div>
