@@ -78,6 +78,12 @@ class DocumentMetadataExtractor
 
     private function extractActaWithLlm(string $text, array $ragContext = [], array $missingFields = []): array
     {
+        $engine = config('services.extraction.engine', 'openai');
+
+        if ($engine === 'ollama') {
+            return $this->extractActaWithOllama($text, $ragContext, $missingFields);
+        }
+
         $apiKey = config('services.openai.api_key');
 
         if (! $apiKey) {
@@ -186,6 +192,91 @@ class DocumentMetadataExtractor
 
             $raw = data_get($response->json(), 'choices.0.message.content');
 
+            if (! is_string($raw) || trim($raw) === '') {
+                return [];
+            }
+
+            $json = json_decode($raw, true);
+            if (! is_array($json)) {
+                return [];
+            }
+
+            return [
+                'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
+                'apoderados' => $this->normalizeApoderados($json['apoderados'] ?? []),
+                'participacion_accionaria' => $this->normalizeParticipacion($json['participacion_accionaria'] ?? []),
+                'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
+                'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
+                'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
+                'consejo_administracion' => $this->normalizeStringList($json['consejo_administracion'] ?? []),
+                'direccion_empresa' => $this->normalizeStringList($json['direccion_empresa'] ?? []),
+                'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
+                'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
+                'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
+                'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
+                'libro_numero' => $this->clean($json['libro_numero'] ?? null),
+                'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
+                'acto' => $this->clean($json['acto'] ?? null),
+            ];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function extractActaWithOllama(string $text, array $ragContext = [], array $missingFields = []): array
+    {
+        $model = config('services.ollama.extraction_model', 'qwen2.5:7b-instruct');
+        $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
+
+        $ragBlock = $this->formatRagContextForPrompt($ragContext);
+        $missingBlock = empty($missingFields)
+            ? 'Sin campos faltantes previos.'
+            : implode(', ', $missingFields);
+
+        $schemaHint = <<<'TXT'
+Devuelve SOLO un JSON válido con estas claves:
+{
+  "fecha_registro": "YYYY-MM-DD|null",
+  "apoderados": [{"ine":"string|null","poder_documento":"string|null","nombre_completo":"string|null","facultades_otorgadas":"string|null"}],
+  "participacion_accionaria": [{"socio":"string|null","porcentaje":"string|null"}],
+  "rpc_folio": "string|null",
+  "rpc_fecha_inscripcion": "YYYY-MM-DD|null",
+  "rpc_lugar": "string|null",
+  "consejo_administracion": ["string"],
+  "direccion_empresa": ["string"],
+  "notaria_numero": "string|null",
+  "notaria_lugar": "string|null",
+  "notario_nombre": "string|null",
+  "escritura_numero": "string|null",
+  "libro_numero": "string|null",
+  "fecha_inscripcion": "YYYY-MM-DD|null",
+  "acto": "string|null"
+}
+TXT;
+
+        $prompt = "Eres un extractor legal de actas corporativas en Mexico.\n"
+            ."Usa SOLO la evidencia del contexto RAG. No inventes.\n"
+            ."Campos faltantes a priorizar: {$missingBlock}\n\n"
+            ."Contexto RAG:\n{$ragBlock}\n\n"
+            ."Texto OCR de respaldo:\n".Str::limit($text, 120000, '')."\n\n"
+            .$schemaHint;
+
+        try {
+            $response = Http::timeout(120)->post(rtrim($baseUrl, '/').'/api/generate', [
+                'model' => $model,
+                'prompt' => $prompt,
+                'stream' => false,
+                'format' => 'json',
+                'options' => [
+                    'temperature' => 0,
+                ],
+            ]);
+
+            if (! $response->successful()) {
+                return [];
+            }
+
+            $raw = data_get($response->json(), 'response');
             if (! is_string($raw) || trim($raw) === '') {
                 return [];
             }
