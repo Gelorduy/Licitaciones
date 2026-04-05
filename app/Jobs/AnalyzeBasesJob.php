@@ -2,8 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\InvalidStateTransitionException;
 use App\Models\Licitacion;
 use App\Services\DocumentTextExtractor;
+use App\Services\WorkflowStateMachine;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -19,7 +21,7 @@ class AnalyzeBasesJob implements ShouldQueue
     {
     }
 
-    public function handle(DocumentTextExtractor $textExtractor): void
+    public function handle(DocumentTextExtractor $textExtractor, WorkflowStateMachine $workflow): void
     {
         $licitacion = Licitacion::query()->find($this->licitacionId);
 
@@ -27,7 +29,22 @@ class AnalyzeBasesJob implements ShouldQueue
             return;
         }
 
-        $licitacion->update(['status' => 'analyzing']);
+        try {
+            $workflow->transition(
+                model: $licitacion,
+                toState: 'analyzing',
+                triggeredByUserId: $licitacion->user_id,
+                reason: 'Inicio de análisis asíncrono de bases',
+                metadata: ['job' => self::class],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            Log::warning('AnalyzeBasesJob blocked by workflow transition rule', [
+                'licitacion_id' => $licitacion->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return;
+        }
 
         try {
             $path = $licitacion->bases_document_path;
@@ -45,9 +62,16 @@ class AnalyzeBasesJob implements ShouldQueue
             $checklist = $this->buildChecklist($text);
 
             $licitacion->update([
-                'status' => 'ready',
                 'checklist' => $checklist,
             ]);
+
+            $workflow->transition(
+                model: $licitacion,
+                toState: 'ready',
+                triggeredByUserId: $licitacion->user_id,
+                reason: 'Análisis de bases completado',
+                metadata: ['checklist_items' => count($checklist)],
+            );
         } catch (\Throwable $e) {
             Log::warning('AnalyzeBasesJob failed', [
                 'licitacion_id' => $licitacion->id,
@@ -55,11 +79,25 @@ class AnalyzeBasesJob implements ShouldQueue
             ]);
 
             $licitacion->update([
-                'status' => 'draft',
                 'checklist' => [
                     ['label' => 'Error al analizar bases, requiere revisión manual', 'checked' => false],
                 ],
             ]);
+
+            try {
+                $workflow->transition(
+                    model: $licitacion,
+                    toState: 'draft',
+                    triggeredByUserId: $licitacion->user_id,
+                    reason: 'Fallo en análisis de bases',
+                    metadata: ['error' => $e->getMessage()],
+                );
+            } catch (InvalidStateTransitionException $transitionError) {
+                Log::warning('AnalyzeBasesJob could not rollback status by workflow rule', [
+                    'licitacion_id' => $licitacion->id,
+                    'error' => $transitionError->getMessage(),
+                ]);
+            }
         }
     }
 

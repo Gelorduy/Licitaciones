@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\InvalidStateTransitionException;
 use App\Models\Licitacion;
 use App\Models\ProposalValidation;
 use App\Services\ProposalValidationService;
+use App\Services\WorkflowStateMachine;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Response;
@@ -41,7 +43,7 @@ class ValidacionController extends Controller
         ]);
     }
 
-    public function store(Request $request, ProposalValidationService $validationService): RedirectResponse
+    public function store(Request $request, ProposalValidationService $validationService, WorkflowStateMachine $workflow): RedirectResponse
     {
         $validated = $request->validate([
             'licitacion_id' => ['required', 'integer'],
@@ -53,15 +55,33 @@ class ValidacionController extends Controller
 
         $report = $validationService->buildReport($licitacion);
 
+        $targetStatus = $report['summary']['traffic_light'] === 'green' ? 'ready_for_export' : 'reviewed';
+
         $validation = ProposalValidation::create([
             'user_id' => $request->user()->id,
             'licitacion_id' => $licitacion->id,
-            'status' => $report['summary']['traffic_light'] === 'green' ? 'ready_for_export' : 'reviewed',
+            'status' => 'draft',
             'traffic_light' => $report['summary']['traffic_light'],
             'report' => $report,
             'audited_at' => now(),
-            'ready_at' => $report['summary']['traffic_light'] === 'green' ? now() : null,
+            'ready_at' => null,
         ]);
+
+        try {
+            $workflow->transition(
+                model: $validation,
+                toState: $targetStatus,
+                triggeredByUserId: $request->user()->id,
+                reason: 'Creación inicial de validación',
+                metadata: ['traffic_light' => $report['summary']['traffic_light']],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            return back()->withErrors(['licitacion_id' => $e->getMessage()]);
+        }
+
+        if ($targetStatus === 'ready_for_export') {
+            $validation->update(['ready_at' => now()]);
+        }
 
         return redirect()->route('validacion.show', $validation->id)->with('success', 'Validación generada.');
     }
@@ -77,7 +97,7 @@ class ValidacionController extends Controller
         ]);
     }
 
-    public function runAudit(Request $request, ProposalValidation $validation, ProposalValidationService $validationService): RedirectResponse
+    public function runAudit(Request $request, ProposalValidation $validation, ProposalValidationService $validationService, WorkflowStateMachine $workflow): RedirectResponse
     {
         abort_unless($validation->user_id === $request->user()->id, 403);
 
@@ -88,18 +108,39 @@ class ValidacionController extends Controller
             ? 'ready_for_export'
             : 'reviewed';
 
+        $trafficLight = $validation->override_applied ? 'green' : $report['summary']['traffic_light'];
+
         $validation->update([
-            'traffic_light' => $validation->override_applied ? 'green' : $report['summary']['traffic_light'],
-            'status' => $status,
+            'traffic_light' => $trafficLight,
             'report' => $report,
             'audited_at' => now(),
-            'ready_at' => $status === 'ready_for_export' ? now() : null,
+            'ready_at' => null,
         ]);
+
+        try {
+            $workflow->transition(
+                model: $validation,
+                toState: $status,
+                triggeredByUserId: $request->user()->id,
+                reason: 'Reejecución de auditoría',
+                metadata: [
+                    'traffic_light' => $trafficLight,
+                    'issues' => count($report['issues'] ?? []),
+                    'warnings' => count($report['warnings'] ?? []),
+                ],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            return back()->withErrors(['audit' => $e->getMessage()]);
+        }
+
+        if ($status === 'ready_for_export') {
+            $validation->update(['ready_at' => now()]);
+        }
 
         return back()->with('success', 'Auditoría ejecutada.');
     }
 
-    public function applyOverride(Request $request, ProposalValidation $validation): RedirectResponse
+    public function applyOverride(Request $request, ProposalValidation $validation, WorkflowStateMachine $workflow): RedirectResponse
     {
         abort_unless($validation->user_id === $request->user()->id, 403);
 
@@ -111,9 +152,22 @@ class ValidacionController extends Controller
             'override_applied' => true,
             'override_reason' => $payload['override_reason'],
             'traffic_light' => 'green',
-            'status' => 'ready_for_export',
-            'ready_at' => now(),
+            'ready_at' => null,
         ]);
+
+        try {
+            $workflow->transition(
+                model: $validation,
+                toState: 'ready_for_export',
+                triggeredByUserId: $request->user()->id,
+                reason: 'Override legal aplicado',
+                metadata: ['override_reason' => $payload['override_reason']],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            return back()->withErrors(['override_reason' => $e->getMessage()]);
+        }
+
+        $validation->update(['ready_at' => now()]);
 
         return back()->with('success', 'Override legal aplicado.');
     }
