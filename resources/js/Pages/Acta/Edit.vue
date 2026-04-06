@@ -41,6 +41,42 @@ const form = useForm({
     acto: props.acta.acto ?? '',
 });
 
+const extractionMetadata = props.acta.document_index?.metadata || {};
+
+const aiScalarFields = [
+    'fecha_registro',
+    'rpc_folio',
+    'rpc_lugar',
+    'rpc_fecha_inscripcion',
+    'notaria_numero',
+    'notaria_lugar',
+    'notario_nombre',
+    'escritura_numero',
+    'libro_numero',
+    'fecha_inscripcion',
+    'acto',
+];
+
+const differingAiFields = aiScalarFields.filter((field) => {
+    const aiValue = extractionMetadata[field];
+    const savedValue = props.acta[field];
+
+    if (aiValue === null || aiValue === undefined || aiValue === '') {
+        return false;
+    }
+
+    return String(aiValue) !== String(savedValue ?? '');
+});
+
+const loadAiValuesIntoForm = () => {
+    aiScalarFields.forEach((field) => {
+        const value = extractionMetadata[field];
+        if (value !== null && value !== undefined && value !== '') {
+            form[field] = value;
+        }
+    });
+};
+
 const submit = () => {
     if (form.documento && props.acta.documento_path) {
         const confirmed = window.confirm(
@@ -96,7 +132,23 @@ const requestReextract = () => {
                         </div>
 
                         <div class="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600" v-if="extractionSource">
-                            Fuente de extracción detectada: <span class="font-medium">{{ extractionSource }}</span>
+                            <p>
+                                Fuente de extracción detectada: <span class="font-medium">{{ extractionSource }}</span>
+                            </p>
+                            <p class="mt-1">
+                                El formulario muestra los valores guardados del acta. La extracción AI se guarda en <span class="font-medium">document_index.metadata</span>.
+                            </p>
+                            <div v-if="differingAiFields.length" class="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+                                <p class="font-medium">Se detectaron diferencias entre valores guardados y AI ({{ differingAiFields.length }} campos).</p>
+                                <Button
+                                    class="mt-2"
+                                    label="Cargar valores AI en el formulario"
+                                    icon="pi pi-download"
+                                    size="small"
+                                    severity="warning"
+                                    @click="loadAiValuesIntoForm"
+                                />
+                            </div>
                         </div>
 
                         <div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3">

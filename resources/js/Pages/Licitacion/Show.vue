@@ -1,11 +1,29 @@
 <script setup>
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
-import { Head, Link } from '@inertiajs/vue3';
+import { Head, Link, useForm } from '@inertiajs/vue3';
 import Button from 'primevue/button';
+import InputError from '@/Components/InputError.vue';
 
 defineProps({
     licitacion: { type: Object, required: true },
 });
+
+const sendForm = useForm({});
+const approvalForm = useForm({
+    approval_note: '',
+});
+
+const sendForApproval = (id) => {
+    sendForm.post(route('licitacion.send-for-approval', id));
+};
+
+const approveSubmission = (id) => {
+    approvalForm.post(route('licitacion.approve-submission', id));
+};
+
+const canSendForApproval = (licitacion) => {
+    return !!(licitacion.validation && (licitacion.validation.status === 'ready_for_export' || licitacion.validation.override_applied));
+};
 </script>
 
 <template>
@@ -50,11 +68,48 @@ defineProps({
                     </div>
 
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div v-if="licitacion.status === 'committed'" class="mb-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                            Esta licitacion ya fue comprometida tras aprobacion humana y ahora es inmutable.
+                        </div>
+                        <div v-else-if="licitacion.status === 'sent_for_approval'" class="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                            Esta licitacion fue enviada y esta pendiente de aprobacion humana para quedar inmutable.
+                        </div>
                         <div class="flex flex-wrap gap-3">
-                            <Link :href="route('licitacion.edit', licitacion.id)">
+                            <Link v-if="licitacion.status !== 'committed'" :href="route('licitacion.edit', licitacion.id)">
                                 <Button label="Editar expediente" icon="pi pi-pencil" />
                             </Link>
+                            <form v-if="licitacion.status !== 'committed' && licitacion.status !== 'sent_for_approval'" @submit.prevent="sendForApproval(licitacion.id)">
+                                <Button
+                                    type="submit"
+                                    label="Enviar a aprobacion humana"
+                                    icon="pi pi-send"
+                                    severity="warning"
+                                    :loading="sendForm.processing"
+                                    :disabled="!canSendForApproval(licitacion)"
+                                />
+                            </form>
                         </div>
+                        <p v-if="licitacion.status !== 'committed' && licitacion.status !== 'sent_for_approval' && !canSendForApproval(licitacion)" class="mt-3 text-xs text-amber-700">
+                            Para enviar esta licitacion, primero completa la validacion en estado ready_for_export (o aplica override legal).
+                        </p>
+
+                        <form
+                            v-if="licitacion.status === 'sent_for_approval'"
+                            class="mt-4 space-y-3 rounded-lg border border-gray-200 p-4"
+                            @submit.prevent="approveSubmission(licitacion.id)"
+                        >
+                            <label class="block text-sm font-medium text-gray-700">Nota de aprobacion humana</label>
+                            <textarea
+                                v-model="approvalForm.approval_note"
+                                rows="3"
+                                class="block w-full rounded-md border-gray-300 text-sm shadow-sm"
+                                placeholder="Describe quien aprobó y por qué se autoriza el envio al gobierno"
+                            />
+                            <InputError :message="approvalForm.errors.approval_note" />
+                            <div class="flex justify-end">
+                                <Button type="submit" label="Aprobar y comprometer" icon="pi pi-check" :loading="approvalForm.processing" />
+                            </div>
+                        </form>
                     </div>
 
                     <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" v-if="licitacion.letterhead">

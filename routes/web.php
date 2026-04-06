@@ -218,6 +218,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/licitaciones', [LicitacionController::class, 'store'])->name('licitacion.store');
     Route::get('/licitaciones/{licitacion}/editar', [LicitacionController::class, 'edit'])->name('licitacion.edit');
     Route::put('/licitaciones/{licitacion}', [LicitacionController::class, 'update'])->name('licitacion.update');
+    Route::post('/licitaciones/{licitacion}/send-for-approval', [LicitacionController::class, 'sendForApproval'])->name('licitacion.send-for-approval');
+    Route::post('/licitaciones/{licitacion}/approve-submission', [LicitacionController::class, 'approveSubmission'])->name('licitacion.approve-submission');
     Route::get('/licitaciones/{licitacion}', [LicitacionController::class, 'show'])->name('licitacion.show');
     Route::get('/validacion', [ValidacionController::class, 'index'])->name('validacion.index');
     Route::post('/validacion', [ValidacionController::class, 'store'])->name('validacion.store');

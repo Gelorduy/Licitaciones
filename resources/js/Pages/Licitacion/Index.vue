@@ -53,10 +53,13 @@ defineProps({
                                 Regulaciones asignadas: {{ licitacion.regulations?.length || 0 }}
                             </p>
                             <p class="mt-1 text-sm text-gray-500">
+                                Estado: {{ licitacion.status }}
+                            </p>
+                            <p class="mt-1 text-sm text-gray-500">
                                 Bases: {{ licitacion.bases_document_original_name || 'Pendiente de carga' }}
                             </p>
                             <div class="mt-4 flex justify-end gap-2">
-                                <Link :href="route('licitacion.edit', licitacion.id)">
+                                <Link v-if="licitacion.status !== 'committed'" :href="route('licitacion.edit', licitacion.id)">
                                     <Button label="Editar" icon="pi pi-pencil" size="small" severity="secondary" />
                                 </Link>
                                 <Link :href="route('licitacion.show', licitacion.id)">

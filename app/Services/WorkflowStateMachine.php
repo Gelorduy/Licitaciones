@@ -17,9 +17,11 @@ class WorkflowStateMachine
     {
         return [
             Licitacion::class => [
-                'draft' => ['analyzing', 'ready'],
-                'analyzing' => ['ready', 'draft'],
-                'ready' => ['analyzing', 'draft'],
+                'draft' => ['analyzing', 'ready', 'sent_for_approval'],
+                'analyzing' => ['ready', 'draft', 'sent_for_approval'],
+                'ready' => ['analyzing', 'draft', 'sent_for_approval'],
+                'sent_for_approval' => ['ready', 'draft', 'committed'],
+                'committed' => [],
             ],
             ProposalValidation::class => [
                 'draft' => ['reviewed', 'ready_for_export'],

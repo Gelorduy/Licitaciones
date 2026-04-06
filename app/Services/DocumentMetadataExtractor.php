@@ -11,7 +11,7 @@ class DocumentMetadataExtractor
 {
     private EmbeddingService $embeddingService;
 
-    public function __construct(EmbeddingService $embeddingService = null)
+    public function __construct(?EmbeddingService $embeddingService = null)
     {
         $this->embeddingService = $embeddingService ?? EmbeddingServiceFactory::make();
     }
@@ -50,6 +50,8 @@ class DocumentMetadataExtractor
         $llmExtraction = $llmAttempt['data'];
         $retryExtraction = [];
         $retryAttempt = null;
+        $visionExtraction = [];
+        $visionAttempt = null;
 
         $merged = $this->mergeActaExtraction($regexExtraction, $llmExtraction);
         $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
@@ -64,6 +66,17 @@ class DocumentMetadataExtractor
             $ragContext['matches'] = array_merge($ragContext['matches'] ?? [], $focusedRagContext['matches'] ?? []);
         }
 
+        // Last-resort pass over final PDF pages to capture stamp/seal details.
+        if (! empty($merged['required_missing_fields']) && $this->shouldRunVisionPass($merged['required_missing_fields'])) {
+            $visionPages = $options['vision_pages'] ?? [];
+            if (is_array($visionPages) && ! empty($visionPages)) {
+                $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields']);
+                $visionExtraction = $visionAttempt['data'];
+                $merged = $this->mergeActaExtraction($merged, $visionExtraction);
+                $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+            }
+        }
+
         $merged['has_required_missing_fields'] = count($merged['required_missing_fields']) > 0;
         $source = 'regex';
         if ($llmExtraction !== []) {
@@ -72,16 +85,21 @@ class DocumentMetadataExtractor
         if ($retryExtraction !== []) {
             $source .= '+llm_retry';
         }
+        if ($visionExtraction !== []) {
+            $source .= '+vision';
+        }
         $merged['extraction_source'] = $source;
         $merged['rag_match_count'] = $this->countRagSnippets($ragContext);
         $merged['rag_queries_used'] = array_keys($ragContext['matches'] ?? []);
         $merged['llm_engine_used'] = array_values(array_unique(array_filter([
             data_get($llmAttempt, 'meta.engine'),
             data_get($retryAttempt, 'meta.engine'),
+            data_get($visionAttempt, 'meta.engine'),
         ])));
         $errors = array_values(array_filter([
             data_get($llmAttempt, 'meta.error'),
             data_get($retryAttempt, 'meta.error'),
+            data_get($visionAttempt, 'meta.error'),
         ]));
         $merged['llm_error'] = empty($errors) ? null : implode(' | ', $errors);
 
@@ -326,6 +344,134 @@ TXT;
         } catch (\Throwable $e) {
             return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'exception: '.$e->getMessage()]];
         }
+    }
+
+    private function extractActaWithVision(array $visionPages, array $missingFields = []): array
+    {
+        $engine = config('services.extraction.engine', 'openai');
+
+        if ($engine === 'ollama') {
+            return $this->extractActaWithOllamaVision($visionPages, $missingFields);
+        }
+
+        return ['data' => [], 'meta' => ['engine' => $engine.'-vision', 'error' => 'vision_not_implemented_for_engine']];
+    }
+
+    private function extractActaWithOllamaVision(array $visionPages, array $missingFields = []): array
+    {
+        if (! filter_var(config('services.ollama.vision_enabled', true), FILTER_VALIDATE_BOOL)) {
+            return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'vision_disabled']];
+        }
+
+        $images = array_values(array_filter($visionPages, static fn ($item) => is_string($item) && trim($item) !== ''));
+        if (empty($images)) {
+            return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'no_vision_pages']];
+        }
+
+        $model = config('services.ollama.vision_model', 'qwen2.5vl:7b');
+        $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
+        $timeout = (int) config('services.ollama.extraction_timeout', 300);
+        $missingBlock = empty($missingFields) ? 'Sin campos faltantes previos.' : implode(', ', $missingFields);
+
+        $schemaHint = <<<'TXT'
+Devuelve SOLO un JSON valido con estas claves (usa null si no aparece evidencia visible):
+{
+  "fecha_registro": "YYYY-MM-DD|null",
+  "rpc_folio": "string|null",
+  "rpc_fecha_inscripcion": "YYYY-MM-DD|null",
+  "rpc_lugar": "string|null",
+  "notaria_numero": "string|null",
+  "notaria_lugar": "string|null",
+  "notario_nombre": "string|null",
+  "escritura_numero": "string|null",
+  "libro_numero": "string|null",
+  "fecha_inscripcion": "YYYY-MM-DD|null",
+  "acto": "string|null"
+}
+TXT;
+
+        $prompt = "Analiza estas imagenes de las ultimas paginas de un acta corporativa mexicana.\n"
+            ."Extrae SOLO datos con evidencia visual, priorizando sellos del Registro Publico de Comercio y notariales.\n"
+            ."Campos faltantes a priorizar: {$missingBlock}\n"
+            ."No inventes.\n\n"
+            .$schemaHint;
+
+        try {
+            $response = Http::timeout(max($timeout, 30))->post(rtrim($baseUrl, '/').'/api/generate', [
+                'model' => $model,
+                'prompt' => $prompt,
+                'images' => array_slice($images, 0, 2),
+                'stream' => false,
+                'format' => 'json',
+                'options' => [
+                    'temperature' => 0,
+                ],
+            ]);
+
+            if (! $response->successful()) {
+                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'http_'.$response->status()]];
+            }
+
+            $raw = data_get($response->json(), 'response');
+            if (! is_string($raw) || trim($raw) === '') {
+                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'empty_response']];
+            }
+
+            $json = json_decode($raw, true);
+            if (! is_array($json)) {
+                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'invalid_json']];
+            }
+
+            return [
+                'data' => $this->normalizeVisionActaResult($json),
+                'meta' => ['engine' => 'ollama-vision', 'error' => null],
+            ];
+        } catch (\Throwable $e) {
+            return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'exception: '.$e->getMessage()]];
+        }
+    }
+
+    private function normalizeVisionActaResult(array $json): array
+    {
+        return [
+            'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
+            'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
+            'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
+            'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
+            'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
+            'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
+            'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
+            'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
+            'libro_numero' => $this->clean($json['libro_numero'] ?? null),
+            'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
+            'acto' => $this->clean($json['acto'] ?? null),
+        ];
+    }
+
+    private function shouldRunVisionPass(array $missingFields): bool
+    {
+        $visionTargetFields = [
+            'fecha_registro',
+            'rpc_folio',
+            'rpc_fecha_inscripcion',
+            'rpc_lugar',
+            'notaria_numero',
+            'notaria_lugar',
+            'notario_nombre',
+            'escritura_numero',
+            'libro_numero',
+            'fecha_inscripcion',
+            'acto',
+        ];
+
+        foreach ($missingFields as $field) {
+            $topField = explode('.', (string) $field)[0];
+            if (in_array($topField, $visionTargetFields, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function buildActaRagContext(array $options, string $text): array

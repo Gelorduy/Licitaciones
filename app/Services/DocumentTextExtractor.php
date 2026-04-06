@@ -21,6 +21,9 @@ class DocumentTextExtractor
             $script,
             $pdfPath,
             config('services.ocr.languages', 'spa+eng'),
+            (string) max((int) config('services.ocr.vision_pages', 3), 0),
+            (string) max((int) config('services.ocr.vision_max_width', 1400), 800),
+            (string) max((int) config('services.ocr.vision_quality', 70), 40),
         ]);
 
         $process->setTimeout(240);
@@ -36,6 +39,13 @@ class DocumentTextExtractor
             Log::warning('Unexpected OCR output', ['output' => $process->getOutput()]);
             throw new RuntimeException('Unexpected OCR output format.');
         }
+
+        $visionPages = [];
+        if (isset($payload['vision_pages']) && is_array($payload['vision_pages'])) {
+            $visionPages = array_values(array_filter($payload['vision_pages'], static fn ($item) => is_string($item) && trim($item) !== ''));
+        }
+
+        $payload['vision_pages'] = $visionPages;
 
         return $payload;
     }

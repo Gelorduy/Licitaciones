@@ -58,4 +58,14 @@ class Licitacion extends Model
     {
         return $this->hasOne(ProposalValidation::class);
     }
+
+    public function isCommitted(): bool
+    {
+        return $this->status === 'committed';
+    }
+
+    public function isPendingApproval(): bool
+    {
+        return $this->status === 'sent_for_approval';
+    }
 }

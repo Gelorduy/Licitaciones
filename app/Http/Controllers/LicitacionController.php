@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\InvalidStateTransitionException;
 use App\Jobs\AnalyzeBasesJob;
 use App\Models\Licitacion;
+use App\Services\WorkflowStateMachine;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Log;
@@ -103,7 +105,12 @@ class LicitacionController extends Controller
     {
         abort_unless($licitacion->user_id === $request->user()->id, 403);
 
-        $licitacion->load(['company:id,nombre,rfc', 'regulations:id,title,scope,country_code', 'letterhead:id,title,city,contact_name,contact_position,phone,email,body_template']);
+        $licitacion->load([
+            'company:id,nombre,rfc',
+            'regulations:id,title,scope,country_code',
+            'letterhead:id,title,city,contact_name,contact_position,phone,email,body_template',
+            'validation:id,licitacion_id,status,override_applied',
+        ]);
 
         return Inertia::render('Licitacion/Show', [
             'licitacion' => $licitacion,
@@ -113,6 +120,7 @@ class LicitacionController extends Controller
     public function edit(Request $request, Licitacion $licitacion): Response
     {
         abort_unless($licitacion->user_id === $request->user()->id, 403);
+        abort_if($licitacion->isCommitted(), 422, 'La licitacion ya fue comprometida y no puede editarse.');
 
         $licitacion->load(['regulations:id']);
 
@@ -142,6 +150,7 @@ class LicitacionController extends Controller
     public function update(Request $request, Licitacion $licitacion): RedirectResponse
     {
         abort_unless($licitacion->user_id === $request->user()->id, 403);
+        abort_if($licitacion->isCommitted(), 422, 'La licitacion ya fue comprometida y no puede editarse.');
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -202,5 +211,62 @@ class LicitacionController extends Controller
         }
 
         return redirect()->route('licitacion.show', $licitacion->id)->with('success', 'Expediente actualizado.');
+    }
+
+    public function sendForApproval(Request $request, Licitacion $licitacion, WorkflowStateMachine $workflow): RedirectResponse
+    {
+        abort_unless($licitacion->user_id === $request->user()->id, 403);
+        abort_if($licitacion->isCommitted(), 422, 'La licitacion ya fue comprometida y no puede reenviarse.');
+
+        $validation = $licitacion->validation;
+        abort_if(
+            ! $validation || ($validation->status !== 'ready_for_export' && ! $validation->override_applied),
+            422,
+            'La licitacion debe estar lista para exportacion antes de enviarse a aprobacion humana.'
+        );
+
+        try {
+            $workflow->transition(
+                model: $licitacion,
+                toState: 'sent_for_approval',
+                triggeredByUserId: $request->user()->id,
+                reason: 'Envio a aprobacion humana previo a compromiso',
+                metadata: [
+                    'validation_id' => $validation->id,
+                    'validation_status' => $validation->status,
+                ],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            return back()->withErrors(['status' => $e->getMessage()]);
+        }
+
+        return back()->with('success', 'Expediente enviado a aprobacion humana.');
+    }
+
+    public function approveSubmission(Request $request, Licitacion $licitacion, WorkflowStateMachine $workflow): RedirectResponse
+    {
+        abort_unless($licitacion->user_id === $request->user()->id, 403);
+        abort_if($licitacion->isCommitted(), 422, 'La licitacion ya fue comprometida.');
+
+        $validated = $request->validate([
+            'approval_note' => ['required', 'string', 'min:10', 'max:1000'],
+        ]);
+
+        try {
+            $workflow->transition(
+                model: $licitacion,
+                toState: 'committed',
+                triggeredByUserId: $request->user()->id,
+                reason: 'Aprobacion humana de envio al gobierno',
+                metadata: [
+                    'approval_note' => $validated['approval_note'],
+                    'approved_by_email' => $request->user()->email,
+                ],
+            );
+        } catch (InvalidStateTransitionException $e) {
+            return back()->withErrors(['approval_note' => $e->getMessage()]);
+        }
+
+        return back()->with('success', 'Licitacion aprobada y comprometida. Ya es inmutable.');
     }
 }
