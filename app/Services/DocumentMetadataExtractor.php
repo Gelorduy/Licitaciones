@@ -46,8 +46,10 @@ class DocumentMetadataExtractor
         ];
 
         $ragContext = $this->buildActaRagContext($options, $text);
-        $llmExtraction = $this->extractActaWithLlm($text, $ragContext);
+        $llmAttempt = $this->extractActaWithLlm($text, $ragContext);
+        $llmExtraction = $llmAttempt['data'];
         $retryExtraction = [];
+        $retryAttempt = null;
 
         $merged = $this->mergeActaExtraction($regexExtraction, $llmExtraction);
         $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
@@ -55,7 +57,8 @@ class DocumentMetadataExtractor
         // Retry once with focused retrieval queries only for missing fields.
         if (! empty($merged['required_missing_fields'])) {
             $focusedRagContext = $this->buildFocusedActaRagContext($options, $text, $merged['required_missing_fields']);
-            $retryExtraction = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields']);
+            $retryAttempt = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields']);
+            $retryExtraction = $retryAttempt['data'];
             $merged = $this->mergeActaExtraction($merged, $retryExtraction);
             $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
             $ragContext['matches'] = array_merge($ragContext['matches'] ?? [], $focusedRagContext['matches'] ?? []);
@@ -72,6 +75,15 @@ class DocumentMetadataExtractor
         $merged['extraction_source'] = $source;
         $merged['rag_match_count'] = $this->countRagSnippets($ragContext);
         $merged['rag_queries_used'] = array_keys($ragContext['matches'] ?? []);
+        $merged['llm_engine_used'] = array_values(array_unique(array_filter([
+            data_get($llmAttempt, 'meta.engine'),
+            data_get($retryAttempt, 'meta.engine'),
+        ])));
+        $errors = array_values(array_filter([
+            data_get($llmAttempt, 'meta.error'),
+            data_get($retryAttempt, 'meta.error'),
+        ]));
+        $merged['llm_error'] = empty($errors) ? null : implode(' | ', $errors);
 
         return $merged;
     }
@@ -87,7 +99,7 @@ class DocumentMetadataExtractor
         $apiKey = config('services.openai.api_key');
 
         if (! $apiKey) {
-            return [];
+            return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'openai_api_key_missing']];
         }
 
         $model = config('services.openai.extraction_model', 'gpt-4.1-mini');
@@ -187,39 +199,42 @@ class DocumentMetadataExtractor
                 ]);
 
             if (! $response->successful()) {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'http_'.$response->status()]];
             }
 
             $raw = data_get($response->json(), 'choices.0.message.content');
 
             if (! is_string($raw) || trim($raw) === '') {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'empty_response']];
             }
 
             $json = json_decode($raw, true);
             if (! is_array($json)) {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'invalid_json']];
             }
 
             return [
-                'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
-                'apoderados' => $this->normalizeApoderados($json['apoderados'] ?? []),
-                'participacion_accionaria' => $this->normalizeParticipacion($json['participacion_accionaria'] ?? []),
-                'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
-                'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
-                'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
-                'consejo_administracion' => $this->normalizeStringList($json['consejo_administracion'] ?? []),
-                'direccion_empresa' => $this->normalizeStringList($json['direccion_empresa'] ?? []),
-                'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
-                'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
-                'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
-                'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
-                'libro_numero' => $this->clean($json['libro_numero'] ?? null),
-                'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
-                'acto' => $this->clean($json['acto'] ?? null),
+                'data' => [
+                    'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
+                    'apoderados' => $this->normalizeApoderados($json['apoderados'] ?? []),
+                    'participacion_accionaria' => $this->normalizeParticipacion($json['participacion_accionaria'] ?? []),
+                    'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
+                    'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
+                    'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
+                    'consejo_administracion' => $this->normalizeStringList($json['consejo_administracion'] ?? []),
+                    'direccion_empresa' => $this->normalizeStringList($json['direccion_empresa'] ?? []),
+                    'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
+                    'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
+                    'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
+                    'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
+                    'libro_numero' => $this->clean($json['libro_numero'] ?? null),
+                    'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
+                    'acto' => $this->clean($json['acto'] ?? null),
+                ],
+                'meta' => ['engine' => 'openai', 'error' => null],
             ];
-        } catch (\Throwable) {
-            return [];
+        } catch (\Throwable $e) {
+            return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'exception: '.$e->getMessage()]];
         }
     }
 
@@ -227,8 +242,8 @@ class DocumentMetadataExtractor
     {
         $model = config('services.ollama.extraction_model', 'qwen2.5:7b-instruct');
         $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
+        $timeout = (int) config('services.ollama.extraction_timeout', 300);
 
-        $ragBlock = $this->formatRagContextForPrompt($ragContext);
         $missingBlock = empty($missingFields)
             ? 'Sin campos faltantes previos.'
             : implode(', ', $missingFields);
@@ -254,15 +269,17 @@ Devuelve SOLO un JSON válido con estas claves:
 }
 TXT;
 
+        // Ollama runs on CPU and has limited throughput — keep prompt small.
+        $ragBlock = $this->formatRagContextForPrompt($ragContext, maxSnippets: 8, maxCharsPerSnippet: 600);
+
         $prompt = "Eres un extractor legal de actas corporativas en Mexico.\n"
             ."Usa SOLO la evidencia del contexto RAG. No inventes.\n"
             ."Campos faltantes a priorizar: {$missingBlock}\n\n"
             ."Contexto RAG:\n{$ragBlock}\n\n"
-            ."Texto OCR de respaldo:\n".Str::limit($text, 120000, '')."\n\n"
             .$schemaHint;
 
         try {
-            $response = Http::timeout(120)->post(rtrim($baseUrl, '/').'/api/generate', [
+            $response = Http::timeout(max($timeout, 30))->post(rtrim($baseUrl, '/').'/api/generate', [
                 'model' => $model,
                 'prompt' => $prompt,
                 'stream' => false,
@@ -273,38 +290,41 @@ TXT;
             ]);
 
             if (! $response->successful()) {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'http_'.$response->status()]];
             }
 
             $raw = data_get($response->json(), 'response');
             if (! is_string($raw) || trim($raw) === '') {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'empty_response']];
             }
 
             $json = json_decode($raw, true);
             if (! is_array($json)) {
-                return [];
+                return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'invalid_json']];
             }
 
             return [
-                'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
-                'apoderados' => $this->normalizeApoderados($json['apoderados'] ?? []),
-                'participacion_accionaria' => $this->normalizeParticipacion($json['participacion_accionaria'] ?? []),
-                'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
-                'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
-                'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
-                'consejo_administracion' => $this->normalizeStringList($json['consejo_administracion'] ?? []),
-                'direccion_empresa' => $this->normalizeStringList($json['direccion_empresa'] ?? []),
-                'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
-                'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
-                'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
-                'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
-                'libro_numero' => $this->clean($json['libro_numero'] ?? null),
-                'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
-                'acto' => $this->clean($json['acto'] ?? null),
+                'data' => [
+                    'fecha_registro' => $this->normalizeDate($json['fecha_registro'] ?? null),
+                    'apoderados' => $this->normalizeApoderados($json['apoderados'] ?? []),
+                    'participacion_accionaria' => $this->normalizeParticipacion($json['participacion_accionaria'] ?? []),
+                    'rpc_folio' => $this->clean($json['rpc_folio'] ?? null),
+                    'rpc_fecha_inscripcion' => $this->normalizeDate($json['rpc_fecha_inscripcion'] ?? null),
+                    'rpc_lugar' => $this->clean($json['rpc_lugar'] ?? null),
+                    'consejo_administracion' => $this->normalizeStringList($json['consejo_administracion'] ?? []),
+                    'direccion_empresa' => $this->normalizeStringList($json['direccion_empresa'] ?? []),
+                    'notaria_numero' => $this->clean($json['notaria_numero'] ?? null),
+                    'notaria_lugar' => $this->clean($json['notaria_lugar'] ?? null),
+                    'notario_nombre' => $this->clean($json['notario_nombre'] ?? null),
+                    'escritura_numero' => $this->clean($json['escritura_numero'] ?? null),
+                    'libro_numero' => $this->clean($json['libro_numero'] ?? null),
+                    'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
+                    'acto' => $this->clean($json['acto'] ?? null),
+                ],
+                'meta' => ['engine' => 'ollama', 'error' => null],
             ];
-        } catch (\Throwable) {
-            return [];
+        } catch (\Throwable $e) {
+            return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'exception: '.$e->getMessage()]];
         }
     }
 
@@ -464,7 +484,7 @@ TXT;
         }
     }
 
-    private function formatRagContextForPrompt(array $ragContext): string
+    private function formatRagContextForPrompt(array $ragContext, int $maxSnippets = 0, int $maxCharsPerSnippet = 1800): string
     {
         $matches = $ragContext['matches'] ?? [];
 
@@ -473,6 +493,7 @@ TXT;
         }
 
         $blocks = [];
+        $totalSnippets = 0;
 
         foreach ($matches as $queryKey => $snippets) {
             if (! is_array($snippets) || empty($snippets)) {
@@ -485,7 +506,12 @@ TXT;
                     continue;
                 }
 
-                $formattedSnippets[] = '['.($idx + 1).'] '.Str::limit(trim($snippet), 1800, '');
+                if ($maxSnippets > 0 && $totalSnippets >= $maxSnippets) {
+                    break 2;
+                }
+
+                $formattedSnippets[] = '['.($idx + 1).'] '.Str::limit(trim($snippet), $maxCharsPerSnippet, '');
+                $totalSnippets++;
             }
 
             if (! empty($formattedSnippets)) {

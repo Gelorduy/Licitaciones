@@ -63,6 +63,7 @@ return [
         'base_url' => env('OLLAMA_BASE_URL', 'http://ollama:11434'),
         'model' => env('OLLAMA_MODEL', 'nomic-embed-text'),
         'extraction_model' => env('OLLAMA_EXTRACTION_MODEL', 'qwen2.5:7b-instruct'),
+        'extraction_timeout' => (int) env('OLLAMA_EXTRACTION_TIMEOUT', 300),
     ],
 
 ];
