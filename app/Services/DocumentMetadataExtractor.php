@@ -52,8 +52,21 @@ class DocumentMetadataExtractor
         $retryAttempt = null;
         $visionExtraction = [];
         $visionAttempt = null;
+        $visionAttempted = false;
+        $visionTrigger = [
+            'enabled' => false,
+            'reasons' => [],
+            'method' => data_get($options, 'extraction_method', 'unknown'),
+            'chars' => (int) data_get($options, 'extracted_chars', mb_strlen($text)),
+            'pages_available' => is_array($options['vision_pages'] ?? null) ? count($options['vision_pages']) : 0,
+        ];
 
-        $merged = $this->mergeActaExtraction($regexExtraction, $llmExtraction);
+        $merged = $regexExtraction;
+        $fieldSources = $this->initializeFieldSources($merged, 'regex');
+        $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
+
+        [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $llmExtraction, 'llm', $fieldSources);
+        $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
         $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
 
         // Retry once with focused retrieval queries only for missing fields.
@@ -61,18 +74,23 @@ class DocumentMetadataExtractor
             $focusedRagContext = $this->buildFocusedActaRagContext($options, $text, $merged['required_missing_fields']);
             $retryAttempt = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields']);
             $retryExtraction = $retryAttempt['data'];
-            $merged = $this->mergeActaExtraction($merged, $retryExtraction);
+            [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $retryExtraction, 'llm_retry', $fieldSources);
+            $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
             $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
             $ragContext['matches'] = array_merge($ragContext['matches'] ?? [], $focusedRagContext['matches'] ?? []);
         }
 
         // Last-resort pass over final PDF pages to capture stamp/seal details.
-        if (! empty($merged['required_missing_fields']) && $this->shouldRunVisionPass($merged['required_missing_fields'])) {
+        $visionTrigger = $this->evaluateVisionTrigger($merged['required_missing_fields'], $options);
+
+        if ($visionTrigger['enabled']) {
+            $visionAttempted = true;
             $visionPages = $options['vision_pages'] ?? [];
             if (is_array($visionPages) && ! empty($visionPages)) {
                 $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields']);
                 $visionExtraction = $visionAttempt['data'];
-                $merged = $this->mergeActaExtraction($merged, $visionExtraction);
+                [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $visionExtraction, 'vision', $fieldSources);
+                $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
                 $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
             }
         }
@@ -91,6 +109,16 @@ class DocumentMetadataExtractor
         $merged['extraction_source'] = $source;
         $merged['rag_match_count'] = $this->countRagSnippets($ragContext);
         $merged['rag_queries_used'] = array_keys($ragContext['matches'] ?? []);
+        $merged['vision_attempted'] = $visionAttempted;
+        $merged['vision_trigger'] = $visionTrigger;
+        $merged['vision_pages_used'] = (int) data_get($visionAttempt, 'meta.images_used', 0);
+        $merged['vision_page_numbers'] = array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0));
+        $merged['vision_elapsed_ms'] = data_get($visionAttempt, 'meta.elapsed_ms');
+        $merged['vision_budget_ms'] = data_get($visionAttempt, 'meta.budget_ms');
+        $merged['vision_budget_exhausted'] = (bool) data_get($visionAttempt, 'meta.budget_exhausted', false);
+        $merged['vision_attempt_count'] = (int) data_get($visionAttempt, 'meta.attempts', 0);
+        $merged['field_sources'] = $fieldSources;
+        $merged['field_confidence'] = $fieldConfidence;
         $merged['llm_engine_used'] = array_values(array_unique(array_filter([
             data_get($llmAttempt, 'meta.engine'),
             data_get($retryAttempt, 'meta.engine'),
@@ -370,7 +398,11 @@ TXT;
 
         $model = config('services.ollama.vision_model', 'qwen2.5vl:7b');
         $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
-        $timeout = (int) config('services.ollama.extraction_timeout', 300);
+        $timeout = (int) config('services.ollama.vision_timeout', 120);
+        $totalBudgetMs = max((int) config('services.ollama.vision_total_budget_ms', 95000), 5000);
+        $maxAttempts = max((int) config('services.ollama.vision_retry_attempts', 2), 1);
+        $baseDelayMs = max((int) config('services.ollama.vision_retry_base_delay_ms', 1200), 100);
+        $maxImages = max((int) config('services.ollama.vision_images_per_request', 2), 1);
         $missingBlock = empty($missingFields) ? 'Sin campos faltantes previos.' : implode(', ', $missingFields);
 
         $schemaHint = <<<'TXT'
@@ -396,39 +428,101 @@ TXT;
             ."No inventes.\n\n"
             .$schemaHint;
 
-        try {
-            $response = Http::timeout(max($timeout, 30))->post(rtrim($baseUrl, '/').'/api/generate', [
-                'model' => $model,
-                'prompt' => $prompt,
-                'images' => array_slice($images, 0, 2),
-                'stream' => false,
-                'format' => 'json',
-                'options' => [
-                    'temperature' => 0,
-                ],
-            ]);
+        $lastError = null;
+        $startedAt = microtime(true);
 
-            if (! $response->successful()) {
-                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'http_'.$response->status()]];
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $elapsedMs = (int) floor((microtime(true) - $startedAt) * 1000);
+            $remainingMs = $totalBudgetMs - $elapsedMs;
+
+            if ($remainingMs <= 0) {
+                $lastError = 'vision_budget_exhausted';
+                break;
             }
 
-            $raw = data_get($response->json(), 'response');
-            if (! is_string($raw) || trim($raw) === '') {
-                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'empty_response']];
+            $requestTimeoutSec = max(5, min($timeout, (int) ceil($remainingMs / 1000)));
+
+            try {
+                $response = Http::timeout($requestTimeoutSec)->post(rtrim($baseUrl, '/').'/api/generate', [
+                    'model' => $model,
+                    'prompt' => $prompt,
+                    'images' => array_slice($images, 0, $maxImages),
+                    'stream' => false,
+                    'format' => 'json',
+                    'options' => [
+                        'temperature' => 0,
+                    ],
+                ]);
+
+                if (! $response->successful()) {
+                    $lastError = 'http_'.$response->status();
+                } else {
+                    $raw = data_get($response->json(), 'response');
+                    if (! is_string($raw) || trim($raw) === '') {
+                        $lastError = 'empty_response';
+                    } else {
+                        $json = json_decode($raw, true);
+                        if (! is_array($json)) {
+                            $lastError = 'invalid_json';
+                        } else {
+                            $elapsedMs = (int) floor((microtime(true) - $startedAt) * 1000);
+                            return [
+                                'data' => $this->normalizeVisionActaResult($json),
+                                'meta' => [
+                                    'engine' => 'ollama-vision',
+                                    'error' => null,
+                                    'images_used' => min(count($images), $maxImages),
+                                    'attempts' => $attempt,
+                                    'elapsed_ms' => $elapsedMs,
+                                    'budget_ms' => $totalBudgetMs,
+                                    'budget_exhausted' => false,
+                                ],
+                            ];
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                $lastError = 'exception: '.$e->getMessage();
+                if ($this->isTimeoutError($e->getMessage())) {
+                    break;
+                }
             }
 
-            $json = json_decode($raw, true);
-            if (! is_array($json)) {
-                return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'invalid_json']];
-            }
+            if ($attempt < $maxAttempts) {
+                $delayMs = $baseDelayMs * (2 ** ($attempt - 1));
+                $elapsedAfterAttemptMs = (int) floor((microtime(true) - $startedAt) * 1000);
+                if (($totalBudgetMs - $elapsedAfterAttemptMs) <= $delayMs) {
+                    $lastError = $lastError ?? 'vision_budget_exhausted';
+                    break;
+                }
 
-            return [
-                'data' => $this->normalizeVisionActaResult($json),
-                'meta' => ['engine' => 'ollama-vision', 'error' => null],
-            ];
-        } catch (\Throwable $e) {
-            return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'exception: '.$e->getMessage()]];
+                usleep($delayMs * 1000);
+            }
         }
+
+        $totalElapsedMs = (int) floor((microtime(true) - $startedAt) * 1000);
+
+        return [
+            'data' => [],
+            'meta' => [
+                'engine' => 'ollama-vision',
+                'error' => $lastError ?? 'vision_failed',
+                'images_used' => min(count($images), $maxImages),
+                'attempts' => $maxAttempts,
+                'elapsed_ms' => $totalElapsedMs,
+                'budget_ms' => $totalBudgetMs,
+                'budget_exhausted' => ($lastError === 'vision_budget_exhausted') || ($totalElapsedMs >= $totalBudgetMs),
+            ],
+        ];
+    }
+
+    private function isTimeoutError(string $message): bool
+    {
+        $lower = mb_strtolower($message);
+
+        return str_contains($lower, 'timed out')
+            || str_contains($lower, 'timeout')
+            || str_contains($lower, 'curl error 28');
     }
 
     private function normalizeVisionActaResult(array $json): array
@@ -448,7 +542,7 @@ TXT;
         ];
     }
 
-    private function shouldRunVisionPass(array $missingFields): bool
+    private function evaluateVisionTrigger(array $missingFields, array $options = []): array
     {
         $visionTargetFields = [
             'fecha_registro',
@@ -464,14 +558,64 @@ TXT;
             'acto',
         ];
 
+        $missingTargetFields = [];
+
         foreach ($missingFields as $field) {
             $topField = explode('.', (string) $field)[0];
             if (in_array($topField, $visionTargetFields, true)) {
-                return true;
+                $missingTargetFields[] = $topField;
             }
         }
 
-        return false;
+        $missingTargetFields = array_values(array_unique($missingTargetFields));
+        if (empty($missingTargetFields)) {
+            return [
+                'enabled' => false,
+                'reasons' => ['no_vision_target_fields_missing'],
+            ];
+        }
+
+        $method = (string) data_get($options, 'extraction_method', 'unknown');
+        $chars = (int) data_get($options, 'extracted_chars', 0);
+        $visionPages = $options['vision_pages'] ?? [];
+        $hasVisionPages = is_array($visionPages) && ! empty($visionPages);
+
+        if (! $hasVisionPages) {
+            return [
+                'enabled' => false,
+                'reasons' => ['no_vision_pages_available'],
+                'missing_target_fields' => $missingTargetFields,
+                'method' => $method,
+                'chars' => $chars,
+            ];
+        }
+
+        $minTextChars = (int) config('services.ocr.vision_min_text_chars', 7000);
+        $minMissingFields = (int) config('services.ocr.vision_min_missing_fields', 3);
+        $reasons = [];
+
+        if ($method === 'ocr') {
+            $reasons[] = 'ocr_method_detected';
+        }
+        if ($chars > 0 && $chars < $minTextChars) {
+            $reasons[] = 'low_text_volume';
+        }
+        if (count($missingTargetFields) >= $minMissingFields) {
+            $reasons[] = 'high_missing_target_fields';
+        }
+
+        return [
+            'enabled' => ! empty($reasons),
+            'reasons' => empty($reasons) ? ['quality_threshold_not_met'] : $reasons,
+            'missing_target_fields' => $missingTargetFields,
+            'method' => $method,
+            'chars' => $chars,
+            'vision_pages_available' => is_array($visionPages) ? count($visionPages) : 0,
+            'thresholds' => [
+                'vision_min_text_chars' => $minTextChars,
+                'vision_min_missing_fields' => $minMissingFields,
+            ],
+        ];
     }
 
     private function buildActaRagContext(array $options, string $text): array
@@ -705,6 +849,117 @@ TXT;
         }
 
         return $merged;
+    }
+
+    private function initializeFieldSources(array $data, string $source): array
+    {
+        $sources = [];
+
+        foreach ($data as $key => $value) {
+            if (is_array($value) && ! empty($value)) {
+                $sources[$key] = $source;
+                continue;
+            }
+
+            if ($value !== null && $value !== '') {
+                $sources[$key] = $source;
+            }
+        }
+
+        return $sources;
+    }
+
+    private function mergeActaExtractionWithConfidence(array $base, array $incoming, string $incomingSource, array $fieldSources): array
+    {
+        $merged = $base;
+
+        foreach ($incoming as $key => $value) {
+            if (is_array($value)) {
+                if (! empty($value) && (empty($merged[$key]) || ! is_array($merged[$key]))) {
+                    $merged[$key] = $value;
+                    $fieldSources[$key] = $incomingSource;
+                }
+
+                continue;
+            }
+
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $currentValue = $merged[$key] ?? null;
+            $currentSource = $fieldSources[$key] ?? null;
+
+            if ($currentValue === null || $currentValue === '') {
+                $merged[$key] = $value;
+                $fieldSources[$key] = $incomingSource;
+                continue;
+            }
+
+            $incomingConfidence = $this->fieldConfidenceScore($key, $value, $incomingSource);
+            $currentConfidence = $this->fieldConfidenceScore($key, $currentValue, $currentSource ?? 'regex');
+
+            if ($incomingConfidence >= ($currentConfidence + 0.05)) {
+                $merged[$key] = $value;
+                $fieldSources[$key] = $incomingSource;
+            }
+        }
+
+        return [$merged, $fieldSources];
+    }
+
+    private function buildFieldConfidenceMap(array $data, array $fieldSources): array
+    {
+        $map = [];
+
+        foreach ($fieldSources as $field => $source) {
+            $value = $data[$field] ?? null;
+            $map[$field] = $this->fieldConfidenceScore((string) $field, $value, (string) $source);
+        }
+
+        return $map;
+    }
+
+    private function fieldConfidenceScore(string $field, mixed $value, string $source): float
+    {
+        if ($value === null || $value === '' || (is_array($value) && empty($value))) {
+            return 0.0;
+        }
+
+        $sourceBase = match ($source) {
+            'regex' => 0.45,
+            'llm' => 0.70,
+            'llm_retry' => 0.78,
+            'vision' => 0.76,
+            default => 0.40,
+        };
+
+        if ($source === 'vision' && in_array($field, [
+            'fecha_registro',
+            'rpc_folio',
+            'rpc_fecha_inscripcion',
+            'rpc_lugar',
+            'notaria_numero',
+            'notaria_lugar',
+            'notario_nombre',
+            'escritura_numero',
+            'libro_numero',
+            'fecha_inscripcion',
+        ], true)) {
+            $sourceBase += 0.10;
+        }
+
+        $qualityBonus = 0.0;
+
+        if (in_array($field, ['fecha_registro', 'rpc_fecha_inscripcion', 'fecha_inscripcion'], true) && is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1) {
+            $qualityBonus += 0.08;
+        }
+
+        if (is_string($value) && mb_strlen(trim($value)) >= 4) {
+            $qualityBonus += 0.04;
+        }
+
+        return min(0.99, $sourceBase + $qualityBonus);
     }
 
     private function missingRequiredActaFields(array $data): array

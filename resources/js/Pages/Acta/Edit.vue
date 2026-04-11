@@ -42,6 +42,8 @@ const form = useForm({
 });
 
 const extractionMetadata = props.acta.document_index?.metadata || {};
+const fieldSources = extractionMetadata.field_sources || {};
+const fieldConfidence = extractionMetadata.field_confidence || {};
 
 const aiScalarFields = [
     'fecha_registro',
@@ -77,6 +79,31 @@ const loadAiValuesIntoForm = () => {
     });
 };
 
+const extractionRows = aiScalarFields
+    .map((field) => {
+        const aiValue = extractionMetadata[field];
+        if (aiValue === null || aiValue === undefined || aiValue === '') {
+            return null;
+        }
+
+        return {
+            field,
+            source: fieldSources[field] || 'n/a',
+            confidence: fieldConfidence[field] ?? null,
+            aiValue,
+            savedValue: props.acta[field] ?? '',
+        };
+    })
+    .filter(Boolean);
+
+const formatConfidence = (value) => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return 'n/a';
+    }
+
+    return `${Math.round(Number(value) * 100)}%`;
+};
+
 const submit = () => {
     if (form.documento && props.acta.documento_path) {
         const confirmed = window.confirm(
@@ -99,6 +126,9 @@ const submit = () => {
 const missingRequiredFields = props.acta.document_index?.metadata?.required_missing_fields || [];
 const hasExtractionAlerts = props.acta.document_index?.metadata?.has_required_missing_fields;
 const extractionSource = props.acta.document_index?.metadata?.extraction_source || null;
+const visionBudgetExhausted = !!extractionMetadata.vision_budget_exhausted;
+const visionElapsedMs = extractionMetadata.vision_elapsed_ms ?? null;
+const visionBudgetMs = extractionMetadata.vision_budget_ms ?? null;
 
 const reextractForm = useForm({});
 
@@ -148,6 +178,34 @@ const requestReextract = () => {
                                     severity="warning"
                                     @click="loadAiValuesIntoForm"
                                 />
+                            </div>
+
+                            <div v-if="visionBudgetExhausted" class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-red-800">
+                                La extracción por visión alcanzó su presupuesto de tiempo.
+                                <span v-if="visionElapsedMs && visionBudgetMs" class="font-medium">
+                                    ({{ visionElapsedMs }} ms / {{ visionBudgetMs }} ms)
+                                </span>
+                            </div>
+
+                            <div v-if="extractionRows.length" class="mt-3 overflow-x-auto">
+                                <table class="min-w-full border-collapse text-[11px]">
+                                    <thead>
+                                        <tr class="bg-slate-100 text-slate-700">
+                                            <th class="border border-slate-200 px-2 py-1 text-left">Campo</th>
+                                            <th class="border border-slate-200 px-2 py-1 text-left">Fuente</th>
+                                            <th class="border border-slate-200 px-2 py-1 text-left">Confianza</th>
+                                            <th class="border border-slate-200 px-2 py-1 text-left">Valor AI</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="row in extractionRows" :key="row.field" class="bg-white">
+                                            <td class="border border-slate-200 px-2 py-1 font-medium">{{ row.field }}</td>
+                                            <td class="border border-slate-200 px-2 py-1">{{ row.source }}</td>
+                                            <td class="border border-slate-200 px-2 py-1">{{ formatConfidence(row.confidence) }}</td>
+                                            <td class="border border-slate-200 px-2 py-1">{{ row.aiValue }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
 

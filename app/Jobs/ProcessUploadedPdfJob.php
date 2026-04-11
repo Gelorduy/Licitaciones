@@ -84,6 +84,9 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'user_id' => $this->userId,
                 'chunks' => $chunks,
                 'vision_pages' => $extracted['vision_pages'] ?? [],
+                'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
+                'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
+                'extracted_chars' => (int) ($extracted['chars'] ?? mb_strlen($text)),
             ]);
 
             $structuredSummary = $this->structuredSummaryForIndex($this->documentType, $metadata);

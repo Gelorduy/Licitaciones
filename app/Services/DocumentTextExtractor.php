@@ -22,6 +22,7 @@ class DocumentTextExtractor
             $pdfPath,
             config('services.ocr.languages', 'spa+eng'),
             (string) max((int) config('services.ocr.vision_pages', 3), 0),
+            (string) max((int) config('services.ocr.vision_scan_pages', 8), 1),
             (string) max((int) config('services.ocr.vision_max_width', 1400), 800),
             (string) max((int) config('services.ocr.vision_quality', 70), 40),
         ]);
@@ -45,7 +46,13 @@ class DocumentTextExtractor
             $visionPages = array_values(array_filter($payload['vision_pages'], static fn ($item) => is_string($item) && trim($item) !== ''));
         }
 
+        $visionPageNumbers = [];
+        if (isset($payload['vision_page_numbers']) && is_array($payload['vision_page_numbers'])) {
+            $visionPageNumbers = array_values(array_filter(array_map(static fn ($item) => is_numeric($item) ? (int) $item : null, $payload['vision_page_numbers']), static fn ($item) => is_int($item) && $item > 0));
+        }
+
         $payload['vision_pages'] = $visionPages;
+        $payload['vision_page_numbers'] = $visionPageNumbers;
 
         return $payload;
     }

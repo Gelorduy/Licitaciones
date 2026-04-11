@@ -50,8 +50,11 @@ return [
     'ocr' => [
         'languages' => env('OCR_LANGUAGES', 'spa+eng'),
         'vision_pages' => (int) env('OCR_VISION_PAGES', 2),
+        'vision_scan_pages' => (int) env('OCR_VISION_SCAN_PAGES', 8),
         'vision_max_width' => (int) env('OCR_VISION_MAX_WIDTH', 1100),
         'vision_quality' => (int) env('OCR_VISION_QUALITY', 60),
+        'vision_min_text_chars' => (int) env('OCR_VISION_MIN_TEXT_CHARS', 7000),
+        'vision_min_missing_fields' => (int) env('OCR_VISION_MIN_MISSING_FIELDS', 3),
     ],
 
     'embeddings' => [
@@ -68,6 +71,11 @@ return [
         'extraction_model' => env('OLLAMA_EXTRACTION_MODEL', 'qwen2.5:7b-instruct'),
         'vision_model' => env('OLLAMA_VISION_MODEL', 'qwen2.5vl:7b'),
         'vision_enabled' => filter_var(env('OLLAMA_VISION_ENABLED', true), FILTER_VALIDATE_BOOL),
+        'vision_timeout' => (int) env('OLLAMA_VISION_TIMEOUT', 90),
+        'vision_total_budget_ms' => (int) env('OLLAMA_VISION_TOTAL_BUDGET_MS', 95000),
+        'vision_retry_attempts' => (int) env('OLLAMA_VISION_RETRY_ATTEMPTS', 2),
+        'vision_retry_base_delay_ms' => (int) env('OLLAMA_VISION_RETRY_BASE_DELAY_MS', 1200),
+        'vision_images_per_request' => (int) env('OLLAMA_VISION_IMAGES_PER_REQUEST', 2),
         'extraction_timeout' => (int) env('OLLAMA_EXTRACTION_TIMEOUT', 300),
     ],
 
