@@ -97,6 +97,7 @@ class ProposalValidationService
         }
 
         $findings = [];
+        $structuredFindings = [];
 
         foreach ($issues as $issue) {
             $findings[] = [
@@ -104,6 +105,15 @@ class ProposalValidationService
                 'category' => 'cumplimiento',
                 'rule_code' => 'CHK-CRIT',
                 'message' => $issue,
+            ];
+
+            $structuredFindings[] = [
+                'documento' => 'Cumplimiento general',
+                'gravedad' => 'Alta',
+                'error' => $issue,
+                'propuesta_solucion' => 'Corregir este incumplimiento antes de presentar la propuesta y reejecutar la auditoría.',
+                'category' => 'cumplimiento',
+                'rule_code' => 'CHK-CRIT',
             ];
         }
 
@@ -113,6 +123,15 @@ class ProposalValidationService
                 'category' => 'seguimiento',
                 'rule_code' => 'CHK-WARN',
                 'message' => $warning,
+            ];
+
+            $structuredFindings[] = [
+                'documento' => 'Seguimiento operativo',
+                'gravedad' => 'Media',
+                'error' => $warning,
+                'propuesta_solucion' => 'Revisar este punto y documentar la corrección para evitar riesgos en la presentación.',
+                'category' => 'seguimiento',
+                'rule_code' => 'CHK-WARN',
             ];
         }
 
@@ -129,10 +148,24 @@ class ProposalValidationService
                 'checks_passed' => collect($checks)->where('passed', true)->count(),
                 'issues_count' => count($issues),
                 'warnings_count' => count($warnings),
+                'structured_findings_count' => count($structuredFindings),
                 'traffic_light' => $trafficLight,
+            ],
+            'inputs' => [
+                'bases_loaded' => ! empty($licitacion->bases_document_path),
+                'checklist_total' => $checklist->count(),
+                'checklist_pending' => $uncheckedChecklist->count(),
+                'regulations_count' => $licitacion->regulations->count(),
+                'company_documents' => [
+                    'actas' => $company->actas->count(),
+                    'opiniones' => $company->opinionesCumplimiento->count(),
+                    'estados_financieros' => $company->financialStatements->count(),
+                    'declaraciones' => $company->taxDeclarations->count(),
+                ],
             ],
             'checks' => $checks,
             'findings' => $findings,
+            'structured_findings' => $structuredFindings,
             'issues' => $issues,
             'warnings' => $warnings,
         ];
@@ -142,13 +175,18 @@ class ProposalValidationService
     {
         $validation->findings()->delete();
 
-        foreach ($report['findings'] ?? [] as $finding) {
+        $structuredByIndex = $report['structured_findings'] ?? [];
+
+        foreach ($report['findings'] ?? [] as $idx => $finding) {
+            $structured = is_array($structuredByIndex[$idx] ?? null) ? $structuredByIndex[$idx] : [];
+
             $validation->findings()->create([
                 'severity' => $finding['severity'] ?? 'info',
                 'category' => $finding['category'] ?? 'general',
                 'rule_code' => $finding['rule_code'] ?? 'GEN-000',
                 'message' => $finding['message'] ?? 'Hallazgo sin detalle.',
                 'status' => 'open',
+                'resolution_note' => $structured['propuesta_solucion'] ?? null,
             ]);
         }
     }

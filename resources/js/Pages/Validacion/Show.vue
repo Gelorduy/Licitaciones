@@ -17,6 +17,7 @@ const applyOverride = () => {
 };
 
 const persistedFindings = props.validation.findings || [];
+const structuredFindings = props.validation.report?.structured_findings || [];
 
 const criticalFindings = persistedFindings.length
     ? persistedFindings.filter((finding) => finding.severity === 'critical')
@@ -41,6 +42,12 @@ const badgeClass = ({
     yellow: 'bg-amber-100 text-amber-700',
     red: 'bg-red-100 text-red-700',
 }[props.validation.traffic_light] || 'bg-slate-100 text-slate-700');
+
+const findingSeverityClass = (severity) => ({
+    Alta: 'bg-red-100 text-red-700',
+    Media: 'bg-amber-100 text-amber-700',
+    Baja: 'bg-blue-100 text-blue-700',
+}[severity] || 'bg-slate-100 text-slate-700');
 </script>
 
 <template>
@@ -133,6 +140,36 @@ const badgeClass = ({
                                 </div>
                                 <p class="mt-2 text-sm text-gray-600">{{ check.detail }}</p>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" v-if="structuredFindings.length">
+                        <h3 class="text-base font-semibold text-gray-900">Hallazgos estructurados</h3>
+                        <p class="mt-1 text-sm text-gray-500">Salida operativa en formato documento/gravedad/error/propuesta de solución.</p>
+
+                        <div class="mt-4 overflow-x-auto">
+                            <table class="min-w-full border-collapse text-sm">
+                                <thead>
+                                    <tr class="bg-slate-50 text-left text-slate-600">
+                                        <th class="border border-slate-200 px-3 py-2">Documento / Requisito</th>
+                                        <th class="border border-slate-200 px-3 py-2">Gravedad</th>
+                                        <th class="border border-slate-200 px-3 py-2">Error Detectado</th>
+                                        <th class="border border-slate-200 px-3 py-2">Propuesta de Solución</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(finding, idx) in structuredFindings" :key="`structured-${idx}`" class="align-top">
+                                        <td class="border border-slate-200 px-3 py-2 font-medium text-slate-900">{{ finding.documento }}</td>
+                                        <td class="border border-slate-200 px-3 py-2">
+                                            <span class="rounded-full px-2 py-1 text-xs font-semibold" :class="findingSeverityClass(finding.gravedad)">
+                                                {{ finding.gravedad }}
+                                            </span>
+                                        </td>
+                                        <td class="border border-slate-200 px-3 py-2 text-slate-700">{{ finding.error }}</td>
+                                        <td class="border border-slate-200 px-3 py-2 text-emerald-800">{{ finding.propuesta_solucion }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 

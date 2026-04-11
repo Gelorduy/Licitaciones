@@ -10,13 +10,23 @@ class ValidationExportService
 {
     public function buildFindingsRows(ProposalValidation $validation): array
     {
+        $structured = collect($validation->report['structured_findings'] ?? [])->filter(fn ($item) => is_array($item))->values();
+        if ($structured->isNotEmpty()) {
+            return $structured->map(fn ($item) => [
+                'documento' => $item['documento'] ?? 'N/A',
+                'gravedad' => $item['gravedad'] ?? 'Baja',
+                'error' => $item['error'] ?? '',
+                'propuesta_solucion' => $item['propuesta_solucion'] ?? 'Revisar y confirmar el hallazgo.',
+            ])->all();
+        }
+
         $persisted = $validation->findings;
         if ($persisted->isNotEmpty()) {
             return $persisted->map(fn ($finding) => [
                 'documento' => $finding->rule_code.' · '.$finding->category,
                 'gravedad' => $this->mapSeverity($finding->severity),
                 'error' => $finding->message,
-                'propuesta_solucion' => $this->defaultSuggestionForSeverity($finding->severity),
+                'propuesta_solucion' => $finding->resolution_note ?: $this->defaultSuggestionForSeverity($finding->severity),
             ])->values()->all();
         }
 

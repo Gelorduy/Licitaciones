@@ -208,6 +208,7 @@ class ValidacionController extends Controller
 
         $zip->addFromString('report.json', $report ?: '{}');
         $zip->addFromString('findings.json', $validation->findings->toJson(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        $zip->addFromString('structured_findings.json', json_encode($validation->report['structured_findings'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         $zip->addFromString('summary.json', json_encode($summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         $zip->addFile($xlsxPath, 'Reporte_Validacion_Licitacion.xlsx');
         $zip->close();
