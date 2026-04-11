@@ -6,6 +6,7 @@ use App\Exceptions\InvalidStateTransitionException;
 use App\Models\Licitacion;
 use App\Models\ProposalValidation;
 use App\Services\ProposalValidationService;
+use App\Services\ValidationExportService;
 use App\Services\WorkflowStateMachine;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -176,7 +177,7 @@ class ValidacionController extends Controller
         return back()->with('success', 'Override legal aplicado.');
     }
 
-    public function exportUsb(Request $request, ProposalValidation $validation)
+    public function exportUsb(Request $request, ProposalValidation $validation, ValidationExportService $exportService)
     {
         abort_unless($validation->user_id === $request->user()->id, 403);
 
@@ -190,6 +191,8 @@ class ValidacionController extends Controller
 
         $zip = new ZipArchive();
         $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+
+        $xlsxPath = $exportService->createFindingsXlsxTempFile($validation);
 
         $report = json_encode($validation->report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
         $summary = [
@@ -206,8 +209,24 @@ class ValidacionController extends Controller
         $zip->addFromString('report.json', $report ?: '{}');
         $zip->addFromString('findings.json', $validation->findings->toJson(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         $zip->addFromString('summary.json', json_encode($summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        $zip->addFile($xlsxPath, 'Reporte_Validacion_Licitacion.xlsx');
         $zip->close();
 
+        @unlink($xlsxPath);
+
         return response()->download($zipPath, 'validacion-'.$validation->id.'.zip')->deleteFileAfterSend(true);
+    }
+
+    public function exportXlsx(Request $request, ProposalValidation $validation, ValidationExportService $exportService)
+    {
+        abort_unless($validation->user_id === $request->user()->id, 403);
+
+        abort_unless($validation->status === 'ready_for_export' || $validation->override_applied, 422, 'La validación aún no está lista para exportación.');
+
+        $validation->load(['findings']);
+
+        $xlsxPath = $exportService->createFindingsXlsxTempFile($validation);
+
+        return response()->download($xlsxPath, 'Reporte_Validacion_Licitacion_'.$validation->id.'.xlsx')->deleteFileAfterSend(true);
     }
 }

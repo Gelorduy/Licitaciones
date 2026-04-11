@@ -226,6 +226,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/validacion/{validation}', [ValidacionController::class, 'show'])->name('validacion.show');
     Route::post('/validacion/{validation}/auditar', [ValidacionController::class, 'runAudit'])->name('validacion.audit');
     Route::post('/validacion/{validation}/override', [ValidacionController::class, 'applyOverride'])->name('validacion.override');
+    Route::get('/validacion/{validation}/export-xlsx', [ValidacionController::class, 'exportXlsx'])->name('validacion.export-xlsx');
     Route::get('/validacion/{validation}/export-usb', [ValidacionController::class, 'exportUsb'])->name('validacion.export-usb');
 });
 

@@ -86,6 +86,9 @@ const badgeClass = ({
                             <form @submit.prevent="$inertia.post(route('validacion.audit', validation.id))">
                                 <Button type="submit" label="Reejecutar auditoría" icon="pi pi-refresh" />
                             </form>
+                            <a :href="route('validacion.export-xlsx', validation.id)">
+                                <Button label="Exportar XLSX" icon="pi pi-file-excel" severity="success" :disabled="!(validation.status === 'ready_for_export' || validation.override_applied)" />
+                            </a>
                             <a :href="route('validacion.export-usb', validation.id)">
                                 <Button label="Exportar ZIP" icon="pi pi-download" severity="secondary" :disabled="!(validation.status === 'ready_for_export' || validation.override_applied)" />
                             </a>
