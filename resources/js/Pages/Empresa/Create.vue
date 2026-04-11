@@ -47,7 +47,7 @@ const submit = () => {
 
                             <div>
                                 <InputLabel value="RFC" />
-                                <TextInput v-model="form.rfc" class="mt-1 block w-full uppercase" maxlength="13" />
+                                <TextInput v-model="form.rfc" class="mt-1 block w-full uppercase" minlength="12" maxlength="13" />
                                 <InputError class="mt-2" :message="form.errors.rfc" />
                             </div>
 

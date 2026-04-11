@@ -32,7 +32,7 @@ class EmpresaController extends Controller
     {
         $validated = $request->validate([
             'nombre' => ['required', 'string', 'max:255'],
-            'rfc' => ['required', 'string', 'size:13', 'unique:companies,rfc'],
+            'rfc' => ['required', 'string', 'min:12', 'max:13', 'unique:companies,rfc'],
         ]);
 
         $company = $request->user()->companies()->create([
