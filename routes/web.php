@@ -174,6 +174,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/empresas/{company}/actas/{acta}/editar', [ActaController::class, 'edit'])->name('acta.edit');
     Route::put('/empresas/{company}/actas/{acta}', [ActaController::class, 'update'])->name('acta.update');
     Route::post('/empresas/{company}/actas/{acta}/reextraer', [ActaController::class, 'reextract'])->name('acta.reextract');
+    Route::get('/empresas/{company}/actas/{acta}/trace', [ActaController::class, 'downloadTrace'])->name('acta.trace.download');
     Route::get('/empresas/{company}/actas/{acta}/archivo', [ActaController::class, 'viewFile'])->name('acta.file.view');
     Route::get('/empresas/{company}/actas/{acta}/archivo/descargar', [ActaController::class, 'downloadFile'])->name('acta.file.download');
     Route::get('/empresas/{company}/actas/{acta}/texto-ocr', [ActaController::class, 'viewExtractedText'])->name('acta.text.view');

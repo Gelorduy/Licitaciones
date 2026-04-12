@@ -8,15 +8,16 @@ use Symfony\Component\Process\Process;
 
 class DocumentTextExtractor
 {
-    public function extract(string $pdfPath): array
+    public function extract(string $pdfPath, array $options = []): array
     {
         $script = base_path('scripts/pdf_extract.py');
+        $timeoutSeconds = 240;
 
         if (! file_exists($script)) {
             throw new RuntimeException('OCR script not found at '.$script);
         }
 
-        $process = new Process([
+        $command = [
             'python3',
             $script,
             $pdfPath,
@@ -25,12 +26,27 @@ class DocumentTextExtractor
             (string) max((int) config('services.ocr.vision_scan_pages', 8), 1),
             (string) max((int) config('services.ocr.vision_max_width', 1400), 800),
             (string) max((int) config('services.ocr.vision_quality', 70), 40),
+        ];
+
+        $this->trace($options, 'ocr.process.start', [
+            'script' => $script,
+            'pdf_path' => $pdfPath,
+            'command' => $command,
+            'timeout_seconds' => $timeoutSeconds,
         ]);
 
-        $process->setTimeout(240);
+        $process = new Process($command);
+
+        $process->setTimeout($timeoutSeconds);
         $process->run();
 
         if (! $process->isSuccessful()) {
+            $this->trace($options, 'ocr.process.failed', [
+                'exit_code' => $process->getExitCode(),
+                'error_output' => trim($process->getErrorOutput()),
+                'output_preview' => mb_substr(trim($process->getOutput()), 0, 2000),
+            ]);
+
             throw new RuntimeException('PDF extraction failed: '.trim($process->getErrorOutput().' '.$process->getOutput()));
         }
 
@@ -38,6 +54,9 @@ class DocumentTextExtractor
 
         if (! is_array($payload) || ! isset($payload['text'])) {
             Log::warning('Unexpected OCR output', ['output' => $process->getOutput()]);
+            $this->trace($options, 'ocr.process.invalid_output', [
+                'output_preview' => mb_substr($process->getOutput(), 0, 4000),
+            ]);
             throw new RuntimeException('Unexpected OCR output format.');
         }
 
@@ -54,6 +73,22 @@ class DocumentTextExtractor
         $payload['vision_pages'] = $visionPages;
         $payload['vision_page_numbers'] = $visionPageNumbers;
 
+        $this->trace($options, 'ocr.process.completed', [
+            'extraction_method' => $payload['method'] ?? null,
+            'chars' => $payload['chars'] ?? mb_strlen((string) ($payload['text'] ?? '')),
+            'vision_pages_count' => count($visionPages),
+            'vision_page_numbers' => $visionPageNumbers,
+        ]);
+
         return $payload;
+    }
+
+    private function trace(array $options, string $step, array $data = []): void
+    {
+        $trace = $options['trace'] ?? null;
+
+        if (is_callable($trace)) {
+            $trace($step, $data);
+        }
     }
 }

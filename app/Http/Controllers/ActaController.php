@@ -95,6 +95,7 @@ class ActaController extends Controller
         abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
 
         $acta->load('documentIndex');
+        $processingTrace = $this->loadProcessingTrace($acta);
 
         return Inertia::render('Acta/Edit', [
             'company' => [
@@ -104,6 +105,8 @@ class ActaController extends Controller
             ],
             'acta' => $acta,
             'fileHistory' => $this->fileHistory($acta->id),
+            'processingTrace' => $processingTrace,
+            'processingTraceDownloadUrl' => route('acta.trace.download', [$company->id, $acta->id]),
             'tipos' => ['constitutiva', 'modificacion', 'poderes'],
         ]);
     }
@@ -249,6 +252,22 @@ class ActaController extends Controller
         ]);
     }
 
+    public function downloadTrace(Request $request, Company $company, Acta $acta): StreamedResponse
+    {
+        abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
+
+        $trace = $this->loadProcessingTrace($acta);
+        abort_unless(is_array($trace), 404, 'No hay traza de procesamiento disponible para esta acta.');
+
+        $filename = sprintf('acta-%d-processing-trace.json', $acta->id);
+
+        return response()->streamDownload(function () use ($trace): void {
+            echo json_encode($trace, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }, $filename, [
+            'Content-Type' => 'application/json; charset=UTF-8',
+        ]);
+    }
+
     private function fileHistory(int $actaId): array
     {
         return SystemEventLog::query()
@@ -266,6 +285,24 @@ class ActaController extends Controller
                 'metadata' => $event->metadata,
             ])
             ->all();
+    }
+
+    private function loadProcessingTrace(Acta $acta): ?array
+    {
+        $tracePath = data_get($acta->documentIndex?->metadata, 'processing_trace.latest_path');
+
+        if (! is_string($tracePath) || $tracePath === '') {
+            return null;
+        }
+
+        if (! Storage::disk('local')->exists($tracePath)) {
+            return null;
+        }
+
+        $payload = Storage::disk('local')->get($tracePath);
+        $decoded = json_decode($payload, true);
+
+        return is_array($decoded) ? $decoded : null;
     }
 
     private function streamPdf(Acta $acta, bool $download): StreamedResponse

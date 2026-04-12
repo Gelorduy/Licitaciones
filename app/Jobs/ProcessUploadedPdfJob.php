@@ -7,12 +7,14 @@ use App\Models\DocumentIndex;
 use App\Models\OpinionCumplimiento;
 use App\Models\Regulation;
 use App\Services\DocumentMetadataExtractor;
+use App\Services\DocumentProcessingTraceLogger;
 use App\Services\DocumentTextExtractor;
 use App\Services\VectorIndexer;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class ProcessUploadedPdfJob implements ShouldQueue
 {
@@ -61,12 +63,39 @@ class ProcessUploadedPdfJob implements ShouldQueue
             'error_message' => null,
         ]);
 
+        $trace = new DocumentProcessingTraceLogger(
+            documentType: $this->documentType,
+            documentId: $this->documentId,
+            documentClass: $this->documentClass,
+            userId: $this->userId,
+            companyId: $document instanceof Acta ? $document->company_id : null,
+        );
+
+        $trace->record('job.started', 'info', [
+            'document_class' => $this->documentClass,
+            'document_id' => $this->documentId,
+            'document_type' => $this->documentType,
+            'disk' => $disk,
+            'storage_path' => $path,
+        ]);
+
+        $jobStatus = 'completed';
+        $jobSummary = [];
+        $pendingException = null;
+
         try {
             $binary = Storage::disk($disk)->get($path);
             $tmp = tempnam(sys_get_temp_dir(), 'pdf_');
             file_put_contents($tmp, $binary);
 
-            $extracted = $textExtractor->extract($tmp);
+            $trace->record('file.loaded', 'info', [
+                'bytes' => strlen($binary),
+                'temp_path' => $tmp,
+            ]);
+
+            $extracted = $textExtractor->extract($tmp, [
+                'trace' => fn (string $step, array $data = []) => $trace->record($step, 'info', $data),
+            ]);
             @unlink($tmp);
 
             $text = trim((string) ($extracted['text'] ?? ''));
@@ -76,6 +105,13 @@ class ProcessUploadedPdfJob implements ShouldQueue
             }
 
             $chunks = $this->chunkText($text);
+
+            $trace->record('text.chunked', 'info', [
+                'chunk_count' => count($chunks),
+                'text_chars' => mb_strlen($text),
+                'extraction_method' => $extracted['method'] ?? 'unknown',
+                'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
+            ]);
 
             $metadata = $metadataExtractor->extract($this->documentType, $text, [
                 'namespace' => 'licitaciones-'.$this->documentType,
@@ -87,6 +123,14 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
                 'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
                 'extracted_chars' => (int) ($extracted['chars'] ?? mb_strlen($text)),
+                'trace' => fn (string $step, array $data = []) => $trace->record($step, 'info', $data),
+            ]);
+
+            $trace->record('metadata.extracted', 'info', [
+                'required_missing_fields' => $metadata['required_missing_fields'] ?? [],
+                'llm_error' => $metadata['llm_error'] ?? null,
+                'llm_engine_used' => $metadata['llm_engine_used'] ?? [],
+                'field_sources' => $metadata['field_sources'] ?? [],
             ]);
 
             $structuredSummary = $this->structuredSummaryForIndex($this->documentType, $metadata);
@@ -94,10 +138,13 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 array_unshift($chunks, $structuredSummary);
             }
 
+            $processingTraceReference = $trace->reference();
             $index->update([
                 'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
                 'extracted_text' => $text,
-                'metadata' => $metadata,
+                'metadata' => array_merge($metadata, [
+                    'processing_trace' => $processingTraceReference,
+                ]),
                 'chunk_count' => count($chunks),
                 'status' => 'processed',
                 'error_message' => null,
@@ -105,6 +152,30 @@ class ProcessUploadedPdfJob implements ShouldQueue
             ]);
 
             $this->applyExtractedMetadata($document, $metadata);
+            $document->refresh();
+
+            $trace->record('document.updated', 'info', [
+                'persisted_fields' => $document instanceof Acta ? [
+                    'fecha_registro' => $document->fecha_registro?->toDateString(),
+                    'rpc_fecha_inscripcion' => $document->rpc_fecha_inscripcion?->toDateString(),
+                    'fecha_inscripcion' => $document->fecha_inscripcion?->toDateString(),
+                    'rpc_folio' => $document->rpc_folio,
+                    'rpc_lugar' => $document->rpc_lugar,
+                    'notaria_numero' => $document->notaria_numero,
+                    'notaria_lugar' => $document->notaria_lugar,
+                    'notario_nombre' => $document->notario_nombre,
+                    'escritura_numero' => $document->escritura_numero,
+                    'libro_numero' => $document->libro_numero,
+                    'acto' => $document->acto,
+                ] : [],
+            ]);
+
+            $jobSummary = [
+                'status' => 'processed',
+                'text_chars' => mb_strlen($text),
+                'chunk_count' => count($chunks),
+                'missing_fields' => $metadata['required_missing_fields'] ?? [],
+            ];
         } catch (\Throwable $e) {
             Log::error('Document text extraction failed', [
                 'document_type' => $this->documentType,
@@ -112,19 +183,39 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'error' => $e->getMessage(),
             ]);
 
+            $jobStatus = 'failed';
+            $jobSummary = [
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ];
+
+            $trace->record('job.failed', 'error', [
+                'message' => $e->getMessage(),
+            ]);
+
             $index->update([
                 'status' => 'failed',
                 'error_message' => $e->getMessage(),
+                'metadata' => array_merge((array) ($index->metadata ?? []), [
+                    'processing_trace' => $trace->reference(),
+                ]),
             ]);
 
-            throw $e;
+            $pendingException = $e;
         }
 
         // Vector indexing is kept in a separate try-catch so an API quota or
         // connectivity error does not mark the document as 'failed'. The
         // extracted text is preserved and the record stays 'processed' so it
         // can be re-queued later via: php artisan documents:requeue-indexing
-        try {
+        if ($pendingException === null) {
+            try {
+            $trace->record('vector_index.start', 'info', [
+                'namespace' => 'licitaciones-'.$this->documentType,
+                'base_id' => $this->documentType.'-'.$this->documentId,
+                'chunk_count' => count($chunks),
+            ]);
+
             $indexed = $vectorIndexer->index(
                 namespace: 'licitaciones-'.$this->documentType,
                 baseId: $this->documentType.'-'.$this->documentId,
@@ -143,6 +234,10 @@ class ProcessUploadedPdfJob implements ShouldQueue
                     'indexed_at' => now(),
                     'vector_index_error' => null,
                 ]);
+
+                $trace->record('vector_index.completed', 'info', [
+                    'indexed' => true,
+                ]);
             }
         } catch (\Throwable $e) {
             Log::warning('Vector indexing failed (document stays processed)', [
@@ -152,7 +247,23 @@ class ProcessUploadedPdfJob implements ShouldQueue
             ]);
 
             $index->update(['vector_index_error' => $e->getMessage()]);
+            $trace->record('vector_index.failed', 'warning', [
+                'message' => $e->getMessage(),
+            ]);
             // Do not re-throw: job completes so it does not enter failed_jobs.
+            } 
+        }
+
+        $traceReference = $trace->finalize($jobStatus, $jobSummary);
+
+        $index->update([
+            'metadata' => array_merge((array) ($index->metadata ?? []), [
+                'processing_trace' => $traceReference,
+            ]),
+        ]);
+
+        if ($pendingException !== null) {
+            throw $pendingException;
         }
     }
 
@@ -193,38 +304,27 @@ class ProcessUploadedPdfJob implements ShouldQueue
         if ($document instanceof Acta) {
             $updates = [];
 
-            if (! $document->notaria_numero && ! empty($metadata['notaria_numero'])) {
-                $updates['notaria_numero'] = $metadata['notaria_numero'];
-            }
-            if (! $document->notaria_lugar && ! empty($metadata['notaria_lugar'])) {
-                $updates['notaria_lugar'] = $metadata['notaria_lugar'];
-            }
-            if (! $document->notario_nombre && ! empty($metadata['notario_nombre'])) {
-                $updates['notario_nombre'] = $metadata['notario_nombre'];
-            }
-            if (! $document->escritura_numero && ! empty($metadata['escritura_numero'])) {
-                $updates['escritura_numero'] = $metadata['escritura_numero'];
-            }
-            if (! $document->libro_numero && ! empty($metadata['libro_numero'])) {
-                $updates['libro_numero'] = $metadata['libro_numero'];
-            }
-            if (! $document->rpc_folio && ! empty($metadata['rpc_folio'])) {
-                $updates['rpc_folio'] = $metadata['rpc_folio'];
-            }
-            if (! $document->rpc_lugar && ! empty($metadata['rpc_lugar'])) {
-                $updates['rpc_lugar'] = $metadata['rpc_lugar'];
-            }
-            if (! $document->rpc_fecha_inscripcion && ! empty($metadata['rpc_fecha_inscripcion'])) {
-                $updates['rpc_fecha_inscripcion'] = $metadata['rpc_fecha_inscripcion'];
-            }
-            if (! $document->fecha_registro && ! empty($metadata['fecha_registro'])) {
-                $updates['fecha_registro'] = $metadata['fecha_registro'];
-            }
-            if (! $document->fecha_inscripcion && ! empty($metadata['fecha_inscripcion'])) {
-                $updates['fecha_inscripcion'] = $metadata['fecha_inscripcion'];
-            }
-            if (! $document->acto && ! empty($metadata['acto'])) {
-                $updates['acto'] = $metadata['acto'];
+            $scalarFields = [
+                'notaria_numero',
+                'notaria_lugar',
+                'notario_nombre',
+                'escritura_numero',
+                'libro_numero',
+                'rpc_folio',
+                'rpc_lugar',
+                'rpc_fecha_inscripcion',
+                'fecha_registro',
+                'fecha_inscripcion',
+                'acto',
+            ];
+
+            foreach ($scalarFields as $field) {
+                $currentValue = $document->{$field} ?? null;
+                $incomingValue = $this->normalizeExtractedScalar($metadata[$field] ?? null);
+
+                if ($this->isBlankLike($currentValue) && $incomingValue !== null) {
+                    $updates[$field] = $incomingValue;
+                }
             }
 
             if (empty($document->apoderados) && ! empty($metadata['apoderados']) && is_array($metadata['apoderados'])) {
@@ -267,6 +367,52 @@ class ProcessUploadedPdfJob implements ShouldQueue
             ]));
             $document->save();
         }
+    }
+
+    private function isBlankLike(mixed $value): bool
+    {
+        if ($value === null) {
+            return true;
+        }
+
+        if (! is_string($value)) {
+            return false;
+        }
+
+        $normalized = Str::lower(trim((string) preg_replace('/\s+/u', ' ', $value)));
+
+        return $normalized === '' || in_array($normalized, [
+            'null',
+            'n/a',
+            'na',
+            'none',
+            'sin dato',
+            'sin datos',
+            'no aplica',
+            'no disponible',
+            'nd',
+            'n.d.',
+            's/d',
+        ], true);
+    }
+
+    private function normalizeExtractedScalar(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_string($value) && ! is_numeric($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+
+        if ($this->isBlankLike($normalized)) {
+            return null;
+        }
+
+        return $normalized;
     }
 
     private function chunkText(string $text, int $chunkSize = 1200, int $overlap = 150): array

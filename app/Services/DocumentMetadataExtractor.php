@@ -33,7 +33,7 @@ class DocumentMetadataExtractor
             'notaria_lugar' => $this->match('/Notar[ií]a\s*(?:en|de)?\s*([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑ\s\.]{3,120})/iu', $text),
             'notario_nombre' => $this->match('/Notario(?:\s+P[uú]blico)?\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s\.]+)/iu', $text),
             'escritura_numero' => $this->match('/Escritura\s*(?:N[uú]mero|No\.?|#)?\s*[:\-]?\s*([A-Z0-9\-\/]+)/iu', $text),
-            'rpc_folio' => $this->match('/Folio\s*(?:Mercantil|RPC)?\s*[:\-]?\s*([A-Z0-9\-\/]+)/iu', $text),
+            'rpc_folio' => $this->match('/Folio\s*(?:Mercantil|Mercante|RPC)?\s*[:#\-\.]?\s*([0-9][0-9A-Z\-\/\.]*)/iu', $text),
             'rpc_lugar' => $this->match('/Registro\s+P[uú]blico\s+de\s+Comercio\s*(?:de|en)?\s*([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑ\s\.]{3,120})/iu', $text),
             'fecha_registro' => $this->normalizeDate($this->match('/Fecha\s*(?:de\s*)?(?:registro|inscripci[oó]n)\s*[:\-]?\s*([0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/iu', $text)),
             'rpc_fecha_inscripcion' => $this->normalizeDate($this->match('/Registro\s+P[uú]blico\s+de\s+Comercio[\s\S]{0,180}?Fecha\s*(?:de\s*)?inscripci[oó]n\s*[:\-]?\s*([0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/iu', $text)),
@@ -44,9 +44,19 @@ class DocumentMetadataExtractor
             'consejo_administracion' => [],
             'direccion_empresa' => [],
         ];
+        $regexExtraction = $this->sanitizeActaScalarFields($regexExtraction);
+        $this->trace($options, 'metadata.regex_extraction', [
+            'fields' => $regexExtraction,
+        ]);
 
         $ragContext = $this->buildActaRagContext($options, $text);
-        $llmAttempt = $this->extractActaWithLlm($text, $ragContext);
+        $this->trace($options, 'metadata.rag_context.initial', [
+            'queries_used' => array_keys($ragContext['matches'] ?? []),
+            'match_count' => $this->countRagSnippets($ragContext),
+            'context_preview' => $this->formatRagContextForPrompt($ragContext, 6, 500),
+        ]);
+
+        $llmAttempt = $this->extractActaWithLlm($text, $ragContext, options: $options);
         $llmExtraction = $llmAttempt['data'];
         $retryExtraction = [];
         $retryAttempt = null;
@@ -72,7 +82,14 @@ class DocumentMetadataExtractor
         // Retry once with focused retrieval queries only for missing fields.
         if (! empty($merged['required_missing_fields'])) {
             $focusedRagContext = $this->buildFocusedActaRagContext($options, $text, $merged['required_missing_fields']);
-            $retryAttempt = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields']);
+            $this->trace($options, 'metadata.rag_context.retry', [
+                'missing_fields' => $merged['required_missing_fields'],
+                'queries_used' => array_keys($focusedRagContext['matches'] ?? []),
+                'match_count' => $this->countRagSnippets($focusedRagContext),
+                'context_preview' => $this->formatRagContextForPrompt($focusedRagContext, 8, 500),
+            ]);
+
+            $retryAttempt = $this->extractActaWithLlm($text, $focusedRagContext, $merged['required_missing_fields'], $options);
             $retryExtraction = $retryAttempt['data'];
             [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $retryExtraction, 'llm_retry', $fieldSources);
             $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
@@ -82,18 +99,21 @@ class DocumentMetadataExtractor
 
         // Last-resort pass over final PDF pages to capture stamp/seal details.
         $visionTrigger = $this->evaluateVisionTrigger($merged['required_missing_fields'], $options);
+        $this->trace($options, 'metadata.vision.trigger', $visionTrigger);
 
         if ($visionTrigger['enabled']) {
             $visionAttempted = true;
             $visionPages = $options['vision_pages'] ?? [];
             if (is_array($visionPages) && ! empty($visionPages)) {
-                $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields']);
+            $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields'], $options);
                 $visionExtraction = $visionAttempt['data'];
                 [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $visionExtraction, 'vision', $fieldSources);
                 $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
                 $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
             }
         }
+
+        $merged = $this->sanitizeActaScalarFields($merged);
 
         $merged['has_required_missing_fields'] = count($merged['required_missing_fields']) > 0;
         $source = 'regex';
@@ -131,15 +151,26 @@ class DocumentMetadataExtractor
         ]));
         $merged['llm_error'] = empty($errors) ? null : implode(' | ', $errors);
 
+        $this->trace($options, 'metadata.final', [
+            'required_missing_fields' => $merged['required_missing_fields'],
+            'field_sources' => $fieldSources,
+            'field_confidence' => $fieldConfidence,
+            'llm_engine_used' => $merged['llm_engine_used'],
+            'llm_error' => $merged['llm_error'],
+            'vision_attempted' => $visionAttempted,
+            'vision_pages_used' => $merged['vision_pages_used'],
+            'vision_attempt_count' => $merged['vision_attempt_count'],
+        ]);
+
         return $merged;
     }
 
-    private function extractActaWithLlm(string $text, array $ragContext = [], array $missingFields = []): array
+    private function extractActaWithLlm(string $text, array $ragContext = [], array $missingFields = [], array $options = []): array
     {
         $engine = config('services.extraction.engine', 'openai');
 
         if ($engine === 'ollama') {
-            return $this->extractActaWithOllama($text, $ragContext, $missingFields);
+            return $this->extractActaWithOllama($text, $ragContext, $missingFields, $options);
         }
 
         $apiKey = config('services.openai.api_key');
@@ -219,6 +250,25 @@ class DocumentMetadataExtractor
             : implode(', ', $missingFields);
 
         try {
+            $messages = [
+                [
+                    'role' => 'system',
+                    'content' => 'Eres un extractor legal de actas corporativas en Mexico. Extrae campos SOLO con evidencia del contexto RAG. No inventes datos. Para personas usa nombre completo tal cual aparece. Para fechas usa YYYY-MM-DD. Devuelve SOLO JSON valido ajustado al schema.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nCampos faltantes a priorizar en esta pasada:\n{$missingBlock}\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
+                ],
+            ];
+
+            $this->trace($options, 'llm.openai.request', [
+                'engine' => 'openai',
+                'model' => $model,
+                'missing_fields' => $missingFields,
+                'rag_queries' => array_keys($ragContext['matches'] ?? []),
+                'messages' => $messages,
+            ]);
+
             $response = Http::withToken($apiKey)
                 ->timeout(90)
                 ->post('https://api.openai.com/v1/chat/completions', [
@@ -232,17 +282,15 @@ class DocumentMetadataExtractor
                             'schema' => $schema,
                         ],
                     ],
-                    'messages' => [
-                        [
-                            'role' => 'system',
-                            'content' => 'Eres un extractor legal de actas corporativas en Mexico. Extrae campos SOLO con evidencia del contexto RAG. No inventes datos. Para personas usa nombre completo tal cual aparece. Para fechas usa YYYY-MM-DD. Devuelve SOLO JSON valido ajustado al schema.',
-                        ],
-                        [
-                            'role' => 'user',
-                            'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nCampos faltantes a priorizar en esta pasada:\n{$missingBlock}\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
-                        ],
-                    ],
+                    'messages' => $messages,
                 ]);
+
+            $this->trace($options, 'llm.openai.response', [
+                'engine' => 'openai',
+                'model' => $model,
+                'http_status' => $response->status(),
+                'body_preview' => mb_substr($response->body(), 0, 12000),
+            ]);
 
             if (! $response->successful()) {
                 return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'http_'.$response->status()]];
@@ -280,11 +328,15 @@ class DocumentMetadataExtractor
                 'meta' => ['engine' => 'openai', 'error' => null],
             ];
         } catch (\Throwable $e) {
+            $this->trace($options, 'llm.openai.exception', [
+                'message' => $e->getMessage(),
+            ]);
+
             return ['data' => [], 'meta' => ['engine' => 'openai', 'error' => 'exception: '.$e->getMessage()]];
         }
     }
 
-    private function extractActaWithOllama(string $text, array $ragContext = [], array $missingFields = []): array
+    private function extractActaWithOllama(string $text, array $ragContext = [], array $missingFields = [], array $options = []): array
     {
         $model = config('services.ollama.extraction_model', 'qwen2.5:7b-instruct');
         $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
@@ -325,6 +377,16 @@ TXT;
             .$schemaHint;
 
         try {
+            $this->trace($options, 'llm.ollama.request', [
+                'engine' => 'ollama',
+                'model' => $model,
+                'base_url' => $baseUrl,
+                'timeout_seconds' => $timeout,
+                'missing_fields' => $missingFields,
+                'rag_queries' => array_keys($ragContext['matches'] ?? []),
+                'prompt' => $prompt,
+            ]);
+
             $response = Http::timeout(max($timeout, 30))->post(rtrim($baseUrl, '/').'/api/generate', [
                 'model' => $model,
                 'prompt' => $prompt,
@@ -333,6 +395,13 @@ TXT;
                 'options' => [
                     'temperature' => 0,
                 ],
+            ]);
+
+            $this->trace($options, 'llm.ollama.response', [
+                'engine' => 'ollama',
+                'model' => $model,
+                'http_status' => $response->status(),
+                'body_preview' => mb_substr($response->body(), 0, 12000),
             ]);
 
             if (! $response->successful()) {
@@ -370,22 +439,26 @@ TXT;
                 'meta' => ['engine' => 'ollama', 'error' => null],
             ];
         } catch (\Throwable $e) {
+            $this->trace($options, 'llm.ollama.exception', [
+                'message' => $e->getMessage(),
+            ]);
+
             return ['data' => [], 'meta' => ['engine' => 'ollama', 'error' => 'exception: '.$e->getMessage()]];
         }
     }
 
-    private function extractActaWithVision(array $visionPages, array $missingFields = []): array
+    private function extractActaWithVision(array $visionPages, array $missingFields = [], array $options = []): array
     {
         $engine = config('services.extraction.engine', 'openai');
 
         if ($engine === 'ollama') {
-            return $this->extractActaWithOllamaVision($visionPages, $missingFields);
+            return $this->extractActaWithOllamaVision($visionPages, $missingFields, $options);
         }
 
         return ['data' => [], 'meta' => ['engine' => $engine.'-vision', 'error' => 'vision_not_implemented_for_engine']];
     }
 
-    private function extractActaWithOllamaVision(array $visionPages, array $missingFields = []): array
+    private function extractActaWithOllamaVision(array $visionPages, array $missingFields = [], array $options = []): array
     {
         if (! filter_var(config('services.ollama.vision_enabled', true), FILTER_VALIDATE_BOOL)) {
             return ['data' => [], 'meta' => ['engine' => 'ollama-vision', 'error' => 'vision_disabled']];
@@ -428,6 +501,20 @@ TXT;
             ."No inventes.\n\n"
             .$schemaHint;
 
+        $this->trace($options, 'vision.ollama.request_prepared', [
+            'engine' => 'ollama-vision',
+            'model' => $model,
+            'base_url' => $baseUrl,
+            'missing_fields' => $missingFields,
+            'images_count' => count($images),
+            'images_used_max' => $maxImages,
+            'vision_page_numbers' => $options['vision_page_numbers'] ?? [],
+            'prompt' => $prompt,
+            'timeout_seconds' => $timeout,
+            'total_budget_ms' => $totalBudgetMs,
+            'retry_attempts' => $maxAttempts,
+        ]);
+
         $lastError = null;
         $startedAt = microtime(true);
 
@@ -441,6 +528,12 @@ TXT;
             }
 
             $requestTimeoutSec = max(5, min($timeout, (int) ceil($remainingMs / 1000)));
+            $this->trace($options, 'vision.ollama.attempt.start', [
+                'attempt' => $attempt,
+                'request_timeout_seconds' => $requestTimeoutSec,
+                'remaining_budget_ms' => $remainingMs,
+                'images_sent' => min(count($images), $maxImages),
+            ]);
 
             try {
                 $response = Http::timeout($requestTimeoutSec)->post(rtrim($baseUrl, '/').'/api/generate', [
@@ -452,6 +545,12 @@ TXT;
                     'options' => [
                         'temperature' => 0,
                     ],
+                ]);
+
+                $this->trace($options, 'vision.ollama.attempt.response', [
+                    'attempt' => $attempt,
+                    'http_status' => $response->status(),
+                    'body_preview' => mb_substr($response->body(), 0, 12000),
                 ]);
 
                 if (! $response->successful()) {
@@ -483,6 +582,10 @@ TXT;
                 }
             } catch (\Throwable $e) {
                 $lastError = 'exception: '.$e->getMessage();
+                $this->trace($options, 'vision.ollama.attempt.exception', [
+                    'attempt' => $attempt,
+                    'message' => $e->getMessage(),
+                ]);
                 if ($this->isTimeoutError($e->getMessage())) {
                     break;
                 }
@@ -514,6 +617,15 @@ TXT;
                 'budget_exhausted' => ($lastError === 'vision_budget_exhausted') || ($totalElapsedMs >= $totalBudgetMs),
             ],
         ];
+    }
+
+    private function trace(array $options, string $step, array $data = []): void
+    {
+        $trace = $options['trace'] ?? null;
+
+        if (is_callable($trace)) {
+            $trace($step, $data);
+        }
     }
 
     private function isTimeoutError(string $message): bool
@@ -835,17 +947,11 @@ TXT;
         $merged = $regexExtraction;
 
         foreach ($llmExtraction as $key => $value) {
-            if (is_array($value)) {
-                if (! empty($value)) {
-                    $merged[$key] = $value;
-                }
-
+            if (! $this->hasMeaningfulValue($value)) {
                 continue;
             }
 
-            if ($value !== null && $value !== '') {
-                $merged[$key] = $value;
-            }
+            $merged[$key] = $value;
         }
 
         return $merged;
@@ -856,12 +962,7 @@ TXT;
         $sources = [];
 
         foreach ($data as $key => $value) {
-            if (is_array($value) && ! empty($value)) {
-                $sources[$key] = $source;
-                continue;
-            }
-
-            if ($value !== null && $value !== '') {
+            if ($this->hasMeaningfulValue($value)) {
                 $sources[$key] = $source;
             }
         }
@@ -874,8 +975,12 @@ TXT;
         $merged = $base;
 
         foreach ($incoming as $key => $value) {
+            if (! $this->hasMeaningfulValue($value)) {
+                continue;
+            }
+
             if (is_array($value)) {
-                if (! empty($value) && (empty($merged[$key]) || ! is_array($merged[$key]))) {
+                if (! $this->hasMeaningfulValue($merged[$key] ?? null) || ! is_array($merged[$key] ?? null)) {
                     $merged[$key] = $value;
                     $fieldSources[$key] = $incomingSource;
                 }
@@ -883,14 +988,10 @@ TXT;
                 continue;
             }
 
-            if ($value === null || $value === '') {
-                continue;
-            }
-
             $currentValue = $merged[$key] ?? null;
             $currentSource = $fieldSources[$key] ?? null;
 
-            if ($currentValue === null || $currentValue === '') {
+            if (! $this->hasMeaningfulValue($currentValue)) {
                 $merged[$key] = $value;
                 $fieldSources[$key] = $incomingSource;
                 continue;
@@ -922,7 +1023,7 @@ TXT;
 
     private function fieldConfidenceScore(string $field, mixed $value, string $source): float
     {
-        if ($value === null || $value === '' || (is_array($value) && empty($value))) {
+        if (! $this->hasMeaningfulValue($value)) {
             return 0.0;
         }
 
@@ -981,7 +1082,7 @@ TXT;
         ];
 
         foreach ($requiredScalars as $field) {
-            if (! isset($data[$field]) || $data[$field] === null || $data[$field] === '') {
+            if (! $this->hasMeaningfulValue($data[$field] ?? null)) {
                 $missing[] = $field;
             }
         }
@@ -991,7 +1092,7 @@ TXT;
         } else {
             foreach ($data['apoderados'] as $idx => $apoderado) {
                 foreach (['ine', 'poder_documento', 'nombre_completo', 'facultades_otorgadas'] as $field) {
-                    if (! is_array($apoderado) || empty($apoderado[$field])) {
+                    if (! is_array($apoderado) || ! $this->hasMeaningfulValue($apoderado[$field] ?? null)) {
                         $missing[] = 'apoderados.'.($idx + 1).'.'.$field;
                     }
                 }
@@ -1064,9 +1165,9 @@ TXT;
         return null;
     }
 
-    private function normalizeDate(?string $value): ?string
+    private function normalizeDate(mixed $value): ?string
     {
-        if (! $value) {
+        if (! is_string($value) || ! $this->hasMeaningfulValue($value)) {
             return null;
         }
 
@@ -1085,7 +1186,11 @@ TXT;
 
         $clean = trim($value);
 
-        return $clean === '' ? null : $clean;
+        if ($clean === '' || $this->isNullLikeString($clean)) {
+            return null;
+        }
+
+        return $clean;
     }
 
     private function normalizeStringList(mixed $value): array
@@ -1101,8 +1206,122 @@ TXT;
 
             $normalized = trim($item);
 
-            return $normalized === '' ? null : $normalized;
+            if ($normalized === '' || $this->isNullLikeString($normalized)) {
+                return null;
+            }
+
+            return $normalized;
         }, $value)));
+    }
+
+    private function sanitizeActaScalarFields(array $data): array
+    {
+        $scalarFields = [
+            'notaria_numero',
+            'notaria_lugar',
+            'notario_nombre',
+            'escritura_numero',
+            'libro_numero',
+            'rpc_folio',
+            'rpc_lugar',
+            'acto',
+        ];
+
+        $numericLikeFields = [
+            'notaria_numero',
+            'escritura_numero',
+            'libro_numero',
+            'rpc_folio',
+        ];
+
+        foreach ($scalarFields as $field) {
+            if (! array_key_exists($field, $data)) {
+                continue;
+            }
+
+            if (! is_string($data[$field])) {
+                continue;
+            }
+
+            $value = trim((string) $data[$field]);
+
+            if ($value === '' || $this->isNullLikeString($value)) {
+                $data[$field] = null;
+                continue;
+            }
+
+            $value = trim((string) preg_replace('/\s+/u', ' ', $value));
+
+            if (in_array(Str::lower($value), ['n', 'nmero', 'numero', 'folio', 'mercante'], true)) {
+                $data[$field] = null;
+                continue;
+            }
+
+            if (in_array($field, $numericLikeFields, true)) {
+                if (preg_match('/\d/u', $value) !== 1) {
+                    $data[$field] = null;
+                    continue;
+                }
+
+                $value = trim((string) preg_replace('/[^0-9A-Za-z\-\/\.,]/u', '', $value));
+
+                if ($value === '' || mb_strlen($value) < 2) {
+                    $data[$field] = null;
+                    continue;
+                }
+            } elseif (mb_strlen($value) < 4) {
+                $data[$field] = null;
+                continue;
+            }
+
+            $data[$field] = $value;
+        }
+
+        return $data;
+    }
+
+    private function hasMeaningfulValue(mixed $value): bool
+    {
+        if ($value === null) {
+            return false;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+
+            return $trimmed !== '' && ! $this->isNullLikeString($trimmed);
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                if ($this->hasMeaningfulValue($item)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isNullLikeString(string $value): bool
+    {
+        $normalized = Str::lower(trim((string) preg_replace('/\s+/u', ' ', $value)));
+
+        return in_array($normalized, [
+            'null',
+            'n/a',
+            'na',
+            'none',
+            'sin dato',
+            'sin datos',
+            'no aplica',
+            'no disponible',
+            'nd',
+            'n.d.',
+            's/d',
+        ], true);
     }
 
     private function normalizeApoderados(mixed $value): array

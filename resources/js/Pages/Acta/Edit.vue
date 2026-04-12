@@ -19,6 +19,14 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    processingTrace: {
+        type: Object,
+        default: null,
+    },
+    processingTraceDownloadUrl: {
+        type: String,
+        default: null,
+    },
     tipos: {
         type: Array,
         default: () => [],
@@ -129,6 +137,10 @@ const extractionSource = props.acta.document_index?.metadata?.extraction_source 
 const visionBudgetExhausted = !!extractionMetadata.vision_budget_exhausted;
 const visionElapsedMs = extractionMetadata.vision_elapsed_ms ?? null;
 const visionBudgetMs = extractionMetadata.vision_budget_ms ?? null;
+const processingSteps = props.processingTrace?.steps || [];
+const processingSummary = props.processingTrace?.summary || {};
+
+const formatTraceData = (value) => JSON.stringify(value, null, 2);
 
 const reextractForm = useForm({});
 
@@ -389,6 +401,65 @@ const requestReextract = () => {
                             </div>
                         </div>
                         <p v-else class="mt-4 text-sm text-slate-500">Sin eventos registrados todavía.</p>
+                    </div>
+
+                    <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <h3 class="text-base font-semibold text-gray-900">Trazabilidad del procesamiento</h3>
+                                <p class="mt-1 text-sm text-slate-500">
+                                    Paso a paso del OCR, contexto enviado, prompts emitidos, respuestas de modelo y resultado final del job.
+                                </p>
+                            </div>
+                            <a v-if="processingTraceDownloadUrl" :href="processingTraceDownloadUrl">
+                                <Button label="Descargar log JSON" icon="pi pi-download" severity="secondary" text />
+                            </a>
+                        </div>
+
+                        <div v-if="processingTrace" class="mt-4 space-y-4">
+                            <div class="grid gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 md:grid-cols-4">
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-slate-500">Estado</div>
+                                    <div class="mt-1 font-medium">{{ processingTrace.status || 'n/a' }}</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-slate-500">Inicio</div>
+                                    <div class="mt-1 font-medium">{{ processingTrace.started_at || 'n/a' }}</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-slate-500">Fin</div>
+                                    <div class="mt-1 font-medium">{{ processingTrace.completed_at || 'en curso' }}</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-slate-500">Pasos</div>
+                                    <div class="mt-1 font-medium">{{ processingSteps.length }}</div>
+                                </div>
+                            </div>
+
+                            <div v-if="Object.keys(processingSummary).length" class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                                <div class="text-xs uppercase tracking-wide text-amber-700">Resumen final</div>
+                                <pre class="mt-2 overflow-auto whitespace-pre-wrap text-xs leading-relaxed">{{ formatTraceData(processingSummary) }}</pre>
+                            </div>
+
+                            <div v-if="processingSteps.length" class="space-y-3">
+                                <details v-for="(step, index) in processingSteps" :key="`${step.at}-${step.step}-${index}`" class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                                    <summary class="cursor-pointer list-none">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                                <span class="text-sm font-semibold text-slate-900">{{ index + 1 }}. {{ step.step }}</span>
+                                                <span class="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[11px] uppercase tracking-wide text-slate-700">{{ step.status }}</span>
+                                            </div>
+                                            <span class="text-xs text-slate-500">{{ step.at }}</span>
+                                        </div>
+                                    </summary>
+                                    <pre class="mt-3 overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-800">{{ formatTraceData(step.data || {}) }}</pre>
+                                </details>
+                            </div>
+
+                            <p v-else class="text-sm text-slate-500">La traza existe pero todavía no contiene pasos registrados.</p>
+                        </div>
+
+                        <p v-else class="mt-4 text-sm text-slate-500">Todavía no existe una traza detallada para esta acta. Reejecuta la extracción para generarla.</p>
                     </div>
                 </div>
             </div>
