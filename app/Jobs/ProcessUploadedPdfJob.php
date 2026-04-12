@@ -322,6 +322,10 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 $currentValue = $document->{$field} ?? null;
                 $incomingValue = $this->normalizeExtractedScalar($metadata[$field] ?? null);
 
+                if ($field === 'acto') {
+                    $incomingValue = $this->sanitizeActoIncomingValue($incomingValue);
+                }
+
                 if ($this->isBlankLike($currentValue) && $incomingValue !== null) {
                     $updates[$field] = $incomingValue;
                 }
@@ -413,6 +417,33 @@ class ProcessUploadedPdfJob implements ShouldQueue
         }
 
         return $normalized;
+    }
+
+    private function sanitizeActoIncomingValue(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) preg_replace('/\s+/u', ' ', $value));
+
+        if ($normalized === '' || $this->isBlankLike($normalized)) {
+            return null;
+        }
+
+        $looksLikeOcrNoise = preg_match('/\b(candidates?|proponer\s+a\s+sus\s+clientes|aptos?\s+de\s+contrataci[oó]n|contrataci[oó]?n?)\b/iu', $normalized) === 1;
+        if ($looksLikeOcrNoise) {
+            return null;
+        }
+
+        $wordCount = count(array_filter(preg_split('/\s+/u', $normalized) ?: []));
+        $hasLegalKeyword = preg_match('/\b(constituci[oó]n|asamblea|poder(?:es)?|estatutos|nombramiento|revocaci[oó]n|reforma|protocoli[sz]aci[oó]n|acta constitutiva|administraci[oó]n|apoderad(?:o|os|a|as)|fusi[oó]n|escisi[oó]n|capital|sociedad|otorgamiento)\b/iu', $normalized) === 1;
+
+        if (mb_strlen($normalized) > 160 || ($wordCount > 14 && ! $hasLegalKeyword)) {
+            return null;
+        }
+
+        return rtrim($normalized, " \t\n\r\0\x0B;,.:-");
     }
 
     private function chunkText(string $text, int $chunkSize = 1200, int $overlap = 150): array

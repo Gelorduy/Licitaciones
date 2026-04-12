@@ -1258,6 +1258,11 @@ TXT;
                 continue;
             }
 
+            if ($field === 'acto') {
+                $data[$field] = $this->sanitizeActoValue($value);
+                continue;
+            }
+
             if (in_array($field, $numericLikeFields, true)) {
                 if (preg_match('/\d/u', $value) !== 1) {
                     $data[$field] = null;
@@ -1279,6 +1284,33 @@ TXT;
         }
 
         return $data;
+    }
+
+    private function sanitizeActoValue(string $value): ?string
+    {
+        $normalized = trim((string) preg_replace('/\s+/u', ' ', $value));
+
+        if ($normalized === '' || $this->isNullLikeString($normalized)) {
+            return null;
+        }
+
+        if (mb_strlen($normalized) < 4 || mb_strlen($normalized) > 160) {
+            return null;
+        }
+
+        $wordCount = count(array_filter(preg_split('/\s+/u', $normalized) ?: []));
+        $hasLegalKeyword = preg_match('/\b(constituci[oó]n|asamblea|poder(?:es)?|estatutos|nombramiento|revocaci[oó]n|reforma|protocoli[sz]aci[oó]n|acta constitutiva|administraci[oó]n|apoderad(?:o|os|a|as)|fusi[oó]n|escisi[oó]n|capital|sociedad|otorgamiento)\b/iu', $normalized) === 1;
+        $looksLikeOcrProse = preg_match('/\b(candidates?|contrataci[oó]n|proponer\s+a\s+sus\s+clientes|aptos?\s+de\s+contrataci[oó]n)\b/iu', $normalized) === 1;
+
+        if ($looksLikeOcrProse) {
+            return null;
+        }
+
+        if ($wordCount > 14 && ! $hasLegalKeyword) {
+            return null;
+        }
+
+        return rtrim($normalized, " \t\n\r\0\x0B;,.:-");
     }
 
     private function hasMeaningfulValue(mixed $value): bool
