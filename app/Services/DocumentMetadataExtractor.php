@@ -392,6 +392,7 @@ TXT;
                 'prompt' => $prompt,
                 'stream' => false,
                 'format' => 'json',
+                'keep_alive' => 0,
                 'options' => [
                     'temperature' => 0,
                 ],

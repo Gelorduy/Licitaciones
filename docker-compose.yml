@@ -157,11 +157,11 @@ services:
     networks:
       - licitaciones
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
 
 volumes:
   mysql_data:
