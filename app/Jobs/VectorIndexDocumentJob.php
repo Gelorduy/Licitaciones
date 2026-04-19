@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\DocumentIndex;
+use App\Services\DocumentChunker;
 use App\Services\VectorIndexer;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -29,7 +30,7 @@ class VectorIndexDocumentJob implements ShouldQueue
     {
     }
 
-    public function handle(VectorIndexer $vectorIndexer): void
+    public function handle(VectorIndexer $vectorIndexer, DocumentChunker $documentChunker): void
     {
         $index = DocumentIndex::find($this->documentIndexId);
 
@@ -46,12 +47,21 @@ class VectorIndexDocumentJob implements ShouldQueue
         }
 
         try {
-            $chunks = $this->chunkTextForIndex($text);
+            $storedChunkPayloads = data_get($index->metadata, 'index_chunk_payloads');
+            if (is_array($storedChunkPayloads) && $storedChunkPayloads !== []) {
+                $chunkPayloads = $storedChunkPayloads;
+            } else {
+                $chunks = $documentChunker->chunkTextForIndex($text);
+                $chunkPageMap = is_array(data_get($index->metadata, 'index_chunk_page_map'))
+                    ? data_get($index->metadata, 'index_chunk_page_map')
+                    : [];
+                $chunkPayloads = $documentChunker->attachStoredPageMap($chunks, $chunkPageMap);
+            }
 
             $indexed = $vectorIndexer->index(
                 namespace: 'licitaciones-'.$index->document_type,
                 baseId: $index->document_type.'-'.$index->documentable_id,
-                chunks: $chunks,
+                chunks: $chunkPayloads,
                 metadata: [
                     'document_type' => $index->document_type,
                     'document_id' => $index->documentable_id,
@@ -76,104 +86,5 @@ class VectorIndexDocumentJob implements ShouldQueue
             $index->update(['vector_index_error' => $e->getMessage()]);
             // Do not re-throw so the record stays 'processed' rather than entering failed_jobs.
         }
-    }
-
-    private function chunkText(string $text, int $chunkSize = 1200, int $overlap = 150): array
-    {
-        $text = preg_replace('/\s+/', ' ', $text) ?? '';
-        $length = mb_strlen($text);
-
-        if ($length === 0) {
-            return [];
-        }
-
-        $chunks = [];
-        $start = 0;
-
-        while ($start < $length) {
-            $chunks[] = trim(mb_substr($text, $start, $chunkSize));
-            $start += max($chunkSize - $overlap, 1);
-        }
-
-        return array_values(array_filter($chunks));
-    }
-
-    private function chunkTextForIndex(string $text, int $chunkSize = 1200): array
-    {
-        $text = trim(str_replace(["\r\n", "\r"], "\n", $text));
-
-        if ($text === '') {
-            return [];
-        }
-
-        $paragraphs = preg_split('/\n\s*\n/u', $text) ?: [];
-        $paragraphs = array_values(array_filter(array_map(static function (string $paragraph): string {
-            $lines = preg_split('/\n/u', $paragraph) ?: [];
-            $lines = array_values(array_filter(array_map(static fn (string $line): string => trim($line), $lines), static fn (string $line): bool => $line !== ''));
-
-            return implode("\n", $lines);
-        }, $paragraphs), static fn (string $paragraph): bool => $paragraph !== ''));
-
-        if ($paragraphs === []) {
-            return $this->chunkText($text, $chunkSize);
-        }
-
-        $chunks = [];
-        $currentChunk = '';
-
-        foreach ($paragraphs as $paragraph) {
-            $candidate = $currentChunk === '' ? $paragraph : $currentChunk."\n\n".$paragraph;
-
-            if (mb_strlen($candidate) <= $chunkSize) {
-                $currentChunk = $candidate;
-                continue;
-            }
-
-            if ($currentChunk !== '') {
-                $chunks[] = $currentChunk;
-            }
-
-            if (mb_strlen($paragraph) <= $chunkSize) {
-                $currentChunk = $paragraph;
-                continue;
-            }
-
-            $paragraphLines = preg_split('/\n/u', $paragraph) ?: [];
-            $lineBuffer = '';
-            foreach ($paragraphLines as $line) {
-                $line = trim($line);
-                if ($line === '') {
-                    continue;
-                }
-
-                $lineCandidate = $lineBuffer === '' ? $line : $lineBuffer."\n".$line;
-                if (mb_strlen($lineCandidate) <= $chunkSize) {
-                    $lineBuffer = $lineCandidate;
-                    continue;
-                }
-
-                if ($lineBuffer !== '') {
-                    $chunks[] = $lineBuffer;
-                }
-
-                if (mb_strlen($line) <= $chunkSize) {
-                    $lineBuffer = $line;
-                    continue;
-                }
-
-                foreach ($this->chunkText($line, $chunkSize, 0) as $lineChunk) {
-                    $chunks[] = $lineChunk;
-                }
-                $lineBuffer = '';
-            }
-
-            $currentChunk = $lineBuffer;
-        }
-
-        if ($currentChunk !== '') {
-            $chunks[] = $currentChunk;
-        }
-
-        return array_values(array_filter(array_map('trim', $chunks)));
     }
 }

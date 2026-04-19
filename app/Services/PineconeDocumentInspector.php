@@ -190,10 +190,18 @@ class PineconeDocumentInspector
     {
         $values = data_get($vector, 'values', []);
         $metadata = data_get($vector, 'metadata', []);
+        $pageIds = is_array($metadata['page_ids'] ?? null)
+            ? array_values(array_filter(array_map(static fn (mixed $value): ?string => is_scalar($value) ? (string) $value : null, $metadata['page_ids']), static fn (?string $value): bool => is_string($value) && $value !== ''))
+            : [];
+        $pageNumbers = is_scalar($metadata['page_numbers_csv'] ?? null)
+            ? trim((string) $metadata['page_numbers_csv'])
+            : null;
 
         return [
             'id' => (string) ($vector['id'] ?? ''),
             'chunkIndex' => is_numeric($metadata['chunk_index'] ?? null) ? (int) $metadata['chunk_index'] : null,
+            'pageIds' => $pageIds,
+            'pageNumbers' => $pageNumbers,
             'dimension' => is_array($values) ? count($values) : 0,
             'metadata' => is_array($metadata) ? $metadata : [],
             'text' => is_string($metadata['text'] ?? null) ? $metadata['text'] : null,

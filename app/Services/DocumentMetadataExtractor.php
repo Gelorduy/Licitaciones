@@ -429,11 +429,11 @@ class DocumentMetadataExtractor
             $messages = [
                 [
                     'role' => 'system',
-                    'content' => 'Eres un extractor legal de actas corporativas en Mexico. Extrae campos SOLO con evidencia del contexto RAG. No inventes datos. Para personas usa nombre completo tal cual aparece. Para fechas usa YYYY-MM-DD. Devuelve SOLO JSON valido ajustado al schema.',
+                    'content' => 'Eres un extractor legal de actas corporativas en Mexico. Extrae campos SOLO con evidencia del contexto RAG. No inventes datos. Para personas usa nombre completo tal cual aparece. Para fechas usa YYYY-MM-DD. Devuelve SOLO JSON valido ajustado al schema. '.$this->actaOcrInterpretationHint(),
                 ],
                 [
                     'role' => 'user',
-                    'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nCampos faltantes a priorizar en esta pasada:\n{$missingBlock}\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
+                    'content' => "Contexto RAG (fragmentos recuperados de Pinecone para este documento):\n\n{$ragBlock}\n\nCampos faltantes a priorizar en esta pasada:\n{$missingBlock}\n\nConvenciones OCR/notariales a respetar:\n".$this->actaOcrInterpretationHint()."\n\nTexto OCR de respaldo (usar solo si el contexto RAG es insuficiente):\n\n".Str::limit($text, 120000, ''),
                 ],
             ];
 
@@ -548,6 +548,7 @@ TXT;
 
         $prompt = "Eres un extractor legal de actas corporativas en Mexico.\n"
             ."Usa SOLO la evidencia del contexto RAG. No inventes.\n"
+            ."Convenciones OCR/notariales: ".$this->actaOcrInterpretationHint()."\n"
             ."Campos faltantes a priorizar: {$missingBlock}\n\n"
             ."Contexto RAG:\n{$ragBlock}\n\n"
             .$schemaHint;
@@ -679,11 +680,13 @@ TXT;
                 ."Estas primeras paginas pueden estar maquetadas como una tabla o dos columnas sin lineas visibles.\n"
                 ."Busca etiquetas a la izquierda como ESCRITURA NUMERO, LIBRO NUMERO, FECHA y ACTO, y toma el valor que aparece a la derecha aunque continue en la linea siguiente.\n"
                 ."Para ACTO, prioriza exactamente la fila rotulada 'ACTO:' y devuelve el texto societario que aparece enfrente; no devuelvas frases del sello del RPC como 'Inscripcion en el Registro Publico de Comercio'.\n"
+                ."Convenciones notariales/OCR: ".$this->actaOcrInterpretationHint()."\n"
                 ."Campos faltantes a priorizar: {$missingBlock}\n"
                 ."No inventes.\n\n"
                 .$schemaHint
             : "Analiza estas imagenes de las ultimas paginas de un acta corporativa mexicana.\n"
                 ."Extrae SOLO datos con evidencia visual, priorizando sellos del Registro Publico de Comercio y notariales.\n"
+                ."Convenciones notariales/OCR: ".$this->actaOcrInterpretationHint()."\n"
                 ."Campos faltantes a priorizar: {$missingBlock}\n"
                 ."No inventes.\n\n"
                 .$schemaHint;
@@ -1165,6 +1168,11 @@ TXT;
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    private function actaOcrInterpretationHint(): string
+    {
+        return 'En estos documentos notariales, dos o mas guiones consecutivos dentro de una linea suelen representar espacios en blanco; si la secuencia termina una linea, interpretala como salto de linea o continuacion, no como texto literal. El caracter ~ dentro de una palabra OCR suele sustituir una vocal acentuada; reconstruye la palabra solo cuando sea evidente por el contexto inmediato.';
     }
 
     private function formatRagContextForPrompt(array $ragContext, int $maxSnippets = 0, int $maxCharsPerSnippet = 1800): string

@@ -53,6 +53,17 @@ const props = defineProps({
 });
 
 const prettyJson = (value) => JSON.stringify(value, null, 2);
+const formatRecordPages = (record) => {
+    if (record?.pageNumbers) {
+        return record.pageNumbers;
+    }
+
+    if (Array.isArray(record?.pageIds) && record.pageIds.length) {
+        return record.pageIds.join(', ');
+    }
+
+    return 'n/a';
+};
 </script>
 
 <template>
@@ -142,7 +153,7 @@ const prettyJson = (value) => JSON.stringify(value, null, 2);
                                         <div>
                                             <p class="text-sm font-semibold text-slate-900">{{ record.id }}</p>
                                             <p class="mt-1 text-xs text-slate-500">
-                                                Chunk {{ record.chunkIndex ?? 'n/a' }} · Dimensión {{ record.dimension ?? 0 }}
+                                                Chunk {{ record.chunkIndex ?? 'n/a' }} · Páginas {{ formatRecordPages(record) }} · Dimensión {{ record.dimension ?? 0 }}
                                             </p>
                                         </div>
                                         <span class="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">

@@ -80,14 +80,35 @@ class DocumentTextExtractor
             $visionFirstPageNumbers = array_values(array_filter(array_map(static fn ($item) => is_numeric($item) ? (int) $item : null, $payload['vision_first_page_numbers']), static fn ($item) => is_int($item) && $item > 0));
         }
 
+        $indexPages = [];
+        if (isset($payload['index_pages']) && is_array($payload['index_pages'])) {
+            foreach ($payload['index_pages'] as $page) {
+                if (! is_array($page)) {
+                    continue;
+                }
+
+                $pageNumber = is_numeric($page['page_number'] ?? null) ? (int) $page['page_number'] : null;
+                if (! $pageNumber || $pageNumber <= 0) {
+                    continue;
+                }
+
+                $indexPages[] = [
+                    'page_number' => $pageNumber,
+                    'text' => is_string($page['text'] ?? null) ? trim($page['text']) : '',
+                ];
+            }
+        }
+
         $payload['vision_pages'] = $visionPages;
         $payload['vision_page_numbers'] = $visionPageNumbers;
         $payload['vision_first_pages'] = $visionFirstPages;
         $payload['vision_first_page_numbers'] = $visionFirstPageNumbers;
+        $payload['index_pages'] = $indexPages;
 
         $this->trace($options, 'ocr.process.completed', [
             'extraction_method' => $payload['method'] ?? null,
             'chars' => $payload['chars'] ?? mb_strlen((string) ($payload['text'] ?? '')),
+            'index_pages_count' => count($indexPages),
             'vision_pages_count' => count($visionPages),
             'vision_page_numbers' => $visionPageNumbers,
             'vision_first_pages_count' => count($visionFirstPages),

@@ -6,6 +6,7 @@ use App\Models\Acta;
 use App\Models\DocumentIndex;
 use App\Models\OpinionCumplimiento;
 use App\Models\Regulation;
+use App\Services\DocumentChunker;
 use App\Services\DocumentMetadataExtractor;
 use App\Services\DocumentProcessingTraceLogger;
 use App\Services\DocumentTextExtractor;
@@ -34,6 +35,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
 
     public function handle(
         DocumentTextExtractor $textExtractor,
+        DocumentChunker $documentChunker,
         DocumentMetadataExtractor $metadataExtractor,
         VectorIndexer $vectorIndexer,
     ): void {
@@ -112,12 +114,18 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 throw new \RuntimeException('No text extracted from PDF.');
             }
 
-            $chunks = $this->chunkText($text);
-            $indexChunks = $this->chunkTextForIndex($indexText);
+            $chunks = $documentChunker->chunkText($text);
+            $indexChunkPayloads = $documentChunker->chunkTextForIndexWithPages(
+                text: $indexText,
+                indexPages: is_array($extracted['index_pages'] ?? null) ? $extracted['index_pages'] : [],
+            );
+            $indexChunks = array_values(array_map(static fn (array $chunk): string => (string) ($chunk['text'] ?? ''), $indexChunkPayloads));
+            $indexChunkPageMap = $documentChunker->exportChunkPageMap($indexChunkPayloads);
 
             $trace->record('text.chunked', 'info', [
                 'chunk_count' => count($chunks),
                 'index_chunk_count' => count($indexChunks),
+                'index_pages_count' => count($extracted['index_pages'] ?? []),
                 'text_chars' => mb_strlen($text),
                 'index_text_chars' => mb_strlen($indexText),
                 'extraction_method' => $extracted['method'] ?? 'unknown',
@@ -158,6 +166,12 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'extracted_text' => $text,
                 'index_text' => $indexText,
                 'metadata' => array_merge($metadata, [
+                    'index_chunk_payloads' => array_values(array_map(static fn (array $chunk): array => [
+                        'text' => (string) ($chunk['text'] ?? ''),
+                        'page_numbers' => array_values(array_filter(array_map(static fn ($value) => is_numeric($value) ? (int) $value : null, $chunk['page_numbers'] ?? []), static fn ($value) => is_int($value) && $value > 0)),
+                        'metadata' => is_array($chunk['metadata'] ?? null) ? $chunk['metadata'] : [],
+                    ], $indexChunkPayloads)),
+                    'index_chunk_page_map' => $indexChunkPageMap,
                     'processing_trace' => $processingTraceReference,
                 ]),
                 'chunk_count' => count($indexChunks),
@@ -234,7 +248,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
             $indexed = $vectorIndexer->index(
                 namespace: 'licitaciones-'.$this->documentType,
                 baseId: $this->documentType.'-'.$this->documentId,
-                chunks: $indexChunks,
+                chunks: $indexChunkPayloads,
                 metadata: [
                     'document_type' => $this->documentType,
                     'document_id' => $this->documentId,
@@ -459,106 +473,6 @@ class ProcessUploadedPdfJob implements ShouldQueue
         }
 
         return rtrim($normalized, " \t\n\r\0\x0B;,.:-");
-    }
-
-    private function chunkText(string $text, int $chunkSize = 1200, int $overlap = 150): array
-    {
-        $text = preg_replace('/\s+/', ' ', $text) ?? '';
-        $length = mb_strlen($text);
-
-        if ($length === 0) {
-            return [];
-        }
-
-        $chunks = [];
-        $start = 0;
-
-        while ($start < $length) {
-            $chunk = mb_substr($text, $start, $chunkSize);
-            $chunks[] = trim($chunk);
-            $start += max($chunkSize - $overlap, 1);
-        }
-
-        return array_values(array_filter($chunks));
-    }
-
-    private function chunkTextForIndex(string $text, int $chunkSize = 1200): array
-    {
-        $text = trim(str_replace(["\r\n", "\r"], "\n", $text));
-
-        if ($text === '') {
-            return [];
-        }
-
-        $paragraphs = preg_split('/\n\s*\n/u', $text) ?: [];
-        $paragraphs = array_values(array_filter(array_map(static function (string $paragraph): string {
-            $lines = preg_split('/\n/u', $paragraph) ?: [];
-            $lines = array_values(array_filter(array_map(static fn (string $line): string => trim($line), $lines), static fn (string $line): bool => $line !== ''));
-
-            return implode("\n", $lines);
-        }, $paragraphs), static fn (string $paragraph): bool => $paragraph !== ''));
-
-        if ($paragraphs === []) {
-            return $this->chunkText($text, $chunkSize);
-        }
-
-        $chunks = [];
-        $currentChunk = '';
-
-        foreach ($paragraphs as $paragraph) {
-            $candidate = $currentChunk === '' ? $paragraph : $currentChunk."\n\n".$paragraph;
-
-            if (mb_strlen($candidate) <= $chunkSize) {
-                $currentChunk = $candidate;
-                continue;
-            }
-
-            if ($currentChunk !== '') {
-                $chunks[] = $currentChunk;
-            }
-
-            if (mb_strlen($paragraph) <= $chunkSize) {
-                $currentChunk = $paragraph;
-                continue;
-            }
-
-            $paragraphLines = preg_split('/\n/u', $paragraph) ?: [];
-            $lineBuffer = '';
-            foreach ($paragraphLines as $line) {
-                $line = trim($line);
-                if ($line === '') {
-                    continue;
-                }
-
-                $lineCandidate = $lineBuffer === '' ? $line : $lineBuffer."\n".$line;
-                if (mb_strlen($lineCandidate) <= $chunkSize) {
-                    $lineBuffer = $lineCandidate;
-                    continue;
-                }
-
-                if ($lineBuffer !== '') {
-                    $chunks[] = $lineBuffer;
-                }
-
-                if (mb_strlen($line) <= $chunkSize) {
-                    $lineBuffer = $line;
-                    continue;
-                }
-
-                foreach ($this->chunkText($line, $chunkSize, 0) as $lineChunk) {
-                    $chunks[] = $lineChunk;
-                }
-                $lineBuffer = '';
-            }
-
-            $currentChunk = $lineBuffer;
-        }
-
-        if ($currentChunk !== '') {
-            $chunks[] = $currentChunk;
-        }
-
-        return array_values(array_filter(array_map('trim', $chunks)));
     }
 
     private function structuredSummaryForIndex(string $documentType, array $metadata): ?string
