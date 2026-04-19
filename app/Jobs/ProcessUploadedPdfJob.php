@@ -21,6 +21,8 @@ class ProcessUploadedPdfJob implements ShouldQueue
     use Queueable;
 
     public int $tries = 2;
+    public int $timeout = 5400;
+    public bool $failOnTimeout = true;
 
     public function __construct(
         public string $documentClass,
@@ -111,6 +113,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'text_chars' => mb_strlen($text),
                 'extraction_method' => $extracted['method'] ?? 'unknown',
                 'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
+                'vision_first_page_numbers' => $extracted['vision_first_page_numbers'] ?? [],
             ]);
 
             $metadata = $metadataExtractor->extract($this->documentType, $text, [
@@ -121,6 +124,8 @@ class ProcessUploadedPdfJob implements ShouldQueue
                 'chunks' => $chunks,
                 'vision_pages' => $extracted['vision_pages'] ?? [],
                 'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
+                'vision_first_pages' => $extracted['vision_first_pages'] ?? [],
+                'vision_first_page_numbers' => $extracted['vision_first_page_numbers'] ?? [],
                 'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
                 'extracted_chars' => (int) ($extracted['chars'] ?? mb_strlen($text)),
                 'trace' => fn (string $step, array $data = []) => $trace->record($step, 'info', $data),
@@ -326,24 +331,24 @@ class ProcessUploadedPdfJob implements ShouldQueue
                     $incomingValue = $this->sanitizeActoIncomingValue($incomingValue);
                 }
 
-                if ($this->isBlankLike($currentValue) && $incomingValue !== null) {
+                if ($incomingValue !== null && $currentValue !== $incomingValue) {
                     $updates[$field] = $incomingValue;
                 }
             }
 
-            if (empty($document->apoderados) && ! empty($metadata['apoderados']) && is_array($metadata['apoderados'])) {
+            if (! empty($metadata['apoderados']) && is_array($metadata['apoderados']) && $document->apoderados !== $metadata['apoderados']) {
                 $updates['apoderados'] = $metadata['apoderados'];
             }
 
-            if (empty($document->participacion_accionaria) && ! empty($metadata['participacion_accionaria']) && is_array($metadata['participacion_accionaria'])) {
+            if (! empty($metadata['participacion_accionaria']) && is_array($metadata['participacion_accionaria']) && $document->participacion_accionaria !== $metadata['participacion_accionaria']) {
                 $updates['participacion_accionaria'] = $metadata['participacion_accionaria'];
             }
 
-            if (empty($document->consejo_administracion) && ! empty($metadata['consejo_administracion']) && is_array($metadata['consejo_administracion'])) {
+            if (! empty($metadata['consejo_administracion']) && is_array($metadata['consejo_administracion']) && $document->consejo_administracion !== $metadata['consejo_administracion']) {
                 $updates['consejo_administracion'] = $metadata['consejo_administracion'];
             }
 
-            if (empty($document->direccion_empresa) && ! empty($metadata['direccion_empresa']) && is_array($metadata['direccion_empresa'])) {
+            if (! empty($metadata['direccion_empresa']) && is_array($metadata['direccion_empresa']) && $document->direccion_empresa !== $metadata['direccion_empresa']) {
                 $updates['direccion_empresa'] = $metadata['direccion_empresa'];
             }
 

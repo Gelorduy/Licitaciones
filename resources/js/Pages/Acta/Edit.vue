@@ -33,11 +33,57 @@ const props = defineProps({
     },
 });
 
+const dateFields = ['fecha_registro', 'rpc_fecha_inscripcion', 'fecha_inscripcion'];
+
+const normalizeDateInput = (value) => {
+    if (typeof value !== 'string' || value === '') {
+        return '';
+    }
+
+    return value.slice(0, 10);
+};
+
+const makeApoderado = (item = {}) => ({
+    nombre_completo: item.nombre_completo ?? '',
+    ine: item.ine ?? '',
+    poder_documento: item.poder_documento ?? '',
+    facultades_otorgadas: item.facultades_otorgadas ?? '',
+});
+
+const makeParticipacion = (item = {}) => ({
+    socio: item.socio ?? '',
+    porcentaje: item.porcentaje ?? '',
+});
+
+const buildApoderados = (items = []) => {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [makeApoderado()];
+    }
+
+    return items.map((item) => makeApoderado(item));
+};
+
+const buildParticipaciones = (items = []) => {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [makeParticipacion()];
+    }
+
+    return items.map((item) => makeParticipacion(item));
+};
+
+const buildStringList = (items = []) => {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [''];
+    }
+
+    return items.map((item) => (typeof item === 'string' ? item : ''));
+};
+
 const form = useForm({
     tipo: props.acta.tipo ?? (props.tipos[0] ?? 'constitutiva'),
-    fecha_registro: props.acta.fecha_registro ?? '',
-    rpc_fecha_inscripcion: props.acta.rpc_fecha_inscripcion ?? '',
-    fecha_inscripcion: props.acta.fecha_inscripcion ?? '',
+    fecha_registro: normalizeDateInput(props.acta.fecha_registro),
+    rpc_fecha_inscripcion: normalizeDateInput(props.acta.rpc_fecha_inscripcion),
+    fecha_inscripcion: normalizeDateInput(props.acta.fecha_inscripcion),
     documento: null,
     rpc_folio: props.acta.rpc_folio ?? '',
     rpc_lugar: props.acta.rpc_lugar ?? '',
@@ -47,6 +93,10 @@ const form = useForm({
     escritura_numero: props.acta.escritura_numero ?? '',
     libro_numero: props.acta.libro_numero ?? '',
     acto: props.acta.acto ?? '',
+    apoderados: buildApoderados(props.acta.apoderados),
+    participacion_accionaria: buildParticipaciones(props.acta.participacion_accionaria),
+    consejo_administracion: buildStringList(props.acta.consejo_administracion),
+    direccion_empresa: buildStringList(props.acta.direccion_empresa),
 });
 
 const extractionMetadata = props.acta.document_index?.metadata || {};
@@ -75,6 +125,10 @@ const differingAiFields = aiScalarFields.filter((field) => {
         return false;
     }
 
+    if (dateFields.includes(field)) {
+        return normalizeDateInput(aiValue) !== normalizeDateInput(savedValue ?? '');
+    }
+
     return String(aiValue) !== String(savedValue ?? '');
 });
 
@@ -82,9 +136,25 @@ const loadAiValuesIntoForm = () => {
     aiScalarFields.forEach((field) => {
         const value = extractionMetadata[field];
         if (value !== null && value !== undefined && value !== '') {
-            form[field] = value;
+            form[field] = dateFields.includes(field) ? normalizeDateInput(value) : value;
         }
     });
+
+    if (Array.isArray(extractionMetadata.apoderados)) {
+        form.apoderados = buildApoderados(extractionMetadata.apoderados);
+    }
+
+    if (Array.isArray(extractionMetadata.participacion_accionaria)) {
+        form.participacion_accionaria = buildParticipaciones(extractionMetadata.participacion_accionaria);
+    }
+
+    if (Array.isArray(extractionMetadata.consejo_administracion)) {
+        form.consejo_administracion = buildStringList(extractionMetadata.consejo_administracion);
+    }
+
+    if (Array.isArray(extractionMetadata.direccion_empresa)) {
+        form.direccion_empresa = buildStringList(extractionMetadata.direccion_empresa);
+    }
 };
 
 const extractionRows = aiScalarFields
@@ -110,6 +180,58 @@ const formatConfidence = (value) => {
     }
 
     return `${Math.round(Number(value) * 100)}%`;
+};
+
+const addApoderado = () => {
+    form.apoderados.push(makeApoderado());
+};
+
+const removeApoderado = (index) => {
+    if (form.apoderados.length === 1) {
+        form.apoderados[0] = makeApoderado();
+        return;
+    }
+
+    form.apoderados.splice(index, 1);
+};
+
+const addParticipacion = () => {
+    form.participacion_accionaria.push(makeParticipacion());
+};
+
+const removeParticipacion = (index) => {
+    if (form.participacion_accionaria.length === 1) {
+        form.participacion_accionaria[0] = makeParticipacion();
+        return;
+    }
+
+    form.participacion_accionaria.splice(index, 1);
+};
+
+const addConsejero = () => {
+    form.consejo_administracion.push('');
+};
+
+const removeConsejero = (index) => {
+    if (form.consejo_administracion.length === 1) {
+        form.consejo_administracion[0] = '';
+        return;
+    }
+
+    form.consejo_administracion.splice(index, 1);
+};
+
+const addDireccion = () => {
+    form.direccion_empresa.push('');
+};
+
+const removeDireccion = (index) => {
+    if (form.direccion_empresa.length === 1) {
+        form.direccion_empresa[0] = '';
+        return;
+    }
+
+    form.direccion_empresa.splice(index, 1);
 };
 
 const submit = () => {
@@ -345,12 +467,22 @@ const requestReextract = () => {
 
                                 <div>
                                     <InputLabel value="Acto" />
-                                    <TextInput v-model="form.acto" class="mt-1 block w-full" />
+                                    <textarea
+                                        v-model="form.acto"
+                                        rows="3"
+                                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                    />
                                     <InputError class="mt-2" :message="form.errors.acto" />
                                 </div>
                             </div>
 
                             <div class="grid gap-6 md:grid-cols-2">
+                                <div>
+                                    <InputLabel value="Escritura Número" />
+                                    <TextInput v-model="form.escritura_numero" class="mt-1 block w-full" />
+                                    <InputError class="mt-2" :message="form.errors.escritura_numero" />
+                                </div>
+
                                 <div>
                                     <InputLabel value="Libro Número" />
                                     <TextInput v-model="form.libro_numero" class="mt-1 block w-full" />
@@ -358,25 +490,112 @@ const requestReextract = () => {
                                 </div>
                             </div>
 
-                            <div v-if="Array.isArray(acta.apoderados) && acta.apoderados.length" class="rounded-lg border border-blue-100 bg-blue-50 p-4">
-                                <h4 class="text-sm font-semibold text-blue-900">Apoderados extraídos</h4>
-                                <div class="mt-2 space-y-2 text-xs text-blue-800">
-                                    <div v-for="(apoderado, idx) in acta.apoderados" :key="idx" class="rounded border border-blue-200 bg-white p-2">
-                                        <p><span class="font-medium">Nombre:</span> {{ apoderado.nombre_completo || 'N/A' }}</p>
-                                        <p><span class="font-medium">INE:</span> {{ apoderado.ine || 'N/A' }}</p>
-                                        <p><span class="font-medium">Poder:</span> {{ apoderado.poder_documento || 'N/A' }}</p>
-                                        <p><span class="font-medium">Facultades:</span> {{ apoderado.facultades_otorgadas || 'N/A' }}</p>
+                            <div class="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <h3 class="text-sm font-semibold text-blue-900">Apoderados legales y facultades</h3>
+                                    <Button type="button" label="Agregar apoderado" icon="pi pi-plus" size="small" severity="secondary" @click="addApoderado" />
+                                </div>
+                                <div class="mt-3 space-y-4">
+                                    <div v-for="(apoderado, idx) in form.apoderados" :key="`apoderado-${idx}`" class="rounded-lg border border-blue-200 bg-white p-4">
+                                        <div class="mb-3 flex items-center justify-between gap-3">
+                                            <h4 class="text-sm font-medium text-blue-900">Apoderado {{ idx + 1 }}</h4>
+                                            <Button type="button" label="Quitar" icon="pi pi-trash" size="small" severity="danger" text @click="removeApoderado(idx)" />
+                                        </div>
+                                        <div class="grid gap-4 md:grid-cols-2">
+                                            <div>
+                                                <InputLabel value="Nombre completo" />
+                                                <TextInput v-model="form.apoderados[idx].nombre_completo" class="mt-1 block w-full" />
+                                                <InputError class="mt-2" :message="form.errors[`apoderados.${idx}.nombre_completo`]" />
+                                            </div>
+                                            <div>
+                                                <InputLabel value="INE" />
+                                                <TextInput v-model="form.apoderados[idx].ine" class="mt-1 block w-full" />
+                                                <InputError class="mt-2" :message="form.errors[`apoderados.${idx}.ine`]" />
+                                            </div>
+                                        </div>
+                                        <div class="mt-4 grid gap-4 md:grid-cols-2">
+                                            <div>
+                                                <InputLabel value="Poder / documento" />
+                                                <TextInput v-model="form.apoderados[idx].poder_documento" class="mt-1 block w-full" />
+                                                <InputError class="mt-2" :message="form.errors[`apoderados.${idx}.poder_documento`]" />
+                                            </div>
+                                            <div>
+                                                <InputLabel value="Facultades otorgadas" />
+                                                <textarea
+                                                    v-model="form.apoderados[idx].facultades_otorgadas"
+                                                    rows="3"
+                                                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                                />
+                                                <InputError class="mt-2" :message="form.errors[`apoderados.${idx}.facultades_otorgadas`]" />
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
 
-                            <div v-if="Array.isArray(acta.participacion_accionaria) && acta.participacion_accionaria.length" class="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
-                                <h4 class="text-sm font-semibold text-emerald-900">Participación accionaria extraída</h4>
-                                <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-emerald-800">
-                                    <li v-for="(item, idx) in acta.participacion_accionaria" :key="idx">
-                                        {{ item.socio || 'Socio' }}: {{ item.porcentaje || 'N/A' }}
-                                    </li>
-                                </ul>
+                            <div class="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <h3 class="text-sm font-semibold text-emerald-900">Participación accionaria</h3>
+                                    <Button type="button" label="Agregar participación" icon="pi pi-plus" size="small" severity="secondary" @click="addParticipacion" />
+                                </div>
+                                <div class="mt-3 space-y-4">
+                                    <div v-for="(item, idx) in form.participacion_accionaria" :key="`participacion-${idx}`" class="rounded-lg border border-emerald-200 bg-white p-4">
+                                        <div class="mb-3 flex items-center justify-between gap-3">
+                                            <h4 class="text-sm font-medium text-emerald-900">Socio {{ idx + 1 }}</h4>
+                                            <Button type="button" label="Quitar" icon="pi pi-trash" size="small" severity="danger" text @click="removeParticipacion(idx)" />
+                                        </div>
+                                        <div class="grid gap-4 md:grid-cols-2">
+                                            <div>
+                                                <InputLabel value="Socio" />
+                                                <TextInput v-model="form.participacion_accionaria[idx].socio" class="mt-1 block w-full" />
+                                                <InputError class="mt-2" :message="form.errors[`participacion_accionaria.${idx}.socio`]" />
+                                            </div>
+                                            <div>
+                                                <InputLabel value="Porcentaje" />
+                                                <TextInput v-model="form.participacion_accionaria[idx].porcentaje" class="mt-1 block w-full" />
+                                                <InputError class="mt-2" :message="form.errors[`participacion_accionaria.${idx}.porcentaje`]" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="rounded-lg border border-violet-100 bg-violet-50 p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <h3 class="text-sm font-semibold text-violet-900">Consejo de administración</h3>
+                                    <Button type="button" label="Agregar integrante" icon="pi pi-plus" size="small" severity="secondary" @click="addConsejero" />
+                                </div>
+                                <div class="mt-3 space-y-3">
+                                    <div v-for="(integrante, idx) in form.consejo_administracion" :key="`consejo-${idx}`" class="flex items-start gap-3">
+                                        <div class="flex-1">
+                                            <InputLabel :value="`Integrante ${idx + 1}`" />
+                                            <TextInput v-model="form.consejo_administracion[idx]" class="mt-1 block w-full" />
+                                            <InputError class="mt-2" :message="form.errors[`consejo_administracion.${idx}`]" />
+                                        </div>
+                                        <Button type="button" label="Quitar" icon="pi pi-trash" size="small" severity="danger" text class="mt-6" @click="removeConsejero(idx)" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="rounded-lg border border-amber-100 bg-amber-50 p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <h3 class="text-sm font-semibold text-amber-900">Dirección de la empresa</h3>
+                                    <Button type="button" label="Agregar línea" icon="pi pi-plus" size="small" severity="secondary" @click="addDireccion" />
+                                </div>
+                                <div class="mt-3 space-y-3">
+                                    <div v-for="(linea, idx) in form.direccion_empresa" :key="`direccion-${idx}`" class="flex items-start gap-3">
+                                        <div class="flex-1">
+                                            <InputLabel :value="`Línea ${idx + 1}`" />
+                                            <textarea
+                                                v-model="form.direccion_empresa[idx]"
+                                                rows="2"
+                                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                            />
+                                            <InputError class="mt-2" :message="form.errors[`direccion_empresa.${idx}`]" />
+                                        </div>
+                                        <Button type="button" label="Quitar" icon="pi pi-trash" size="small" severity="danger" text class="mt-6" @click="removeDireccion(idx)" />
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="flex justify-end gap-3">

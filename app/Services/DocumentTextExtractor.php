@@ -70,14 +70,28 @@ class DocumentTextExtractor
             $visionPageNumbers = array_values(array_filter(array_map(static fn ($item) => is_numeric($item) ? (int) $item : null, $payload['vision_page_numbers']), static fn ($item) => is_int($item) && $item > 0));
         }
 
+        $visionFirstPages = [];
+        if (isset($payload['vision_first_pages']) && is_array($payload['vision_first_pages'])) {
+            $visionFirstPages = array_values(array_filter($payload['vision_first_pages'], static fn ($item) => is_string($item) && trim($item) !== ''));
+        }
+
+        $visionFirstPageNumbers = [];
+        if (isset($payload['vision_first_page_numbers']) && is_array($payload['vision_first_page_numbers'])) {
+            $visionFirstPageNumbers = array_values(array_filter(array_map(static fn ($item) => is_numeric($item) ? (int) $item : null, $payload['vision_first_page_numbers']), static fn ($item) => is_int($item) && $item > 0));
+        }
+
         $payload['vision_pages'] = $visionPages;
         $payload['vision_page_numbers'] = $visionPageNumbers;
+        $payload['vision_first_pages'] = $visionFirstPages;
+        $payload['vision_first_page_numbers'] = $visionFirstPageNumbers;
 
         $this->trace($options, 'ocr.process.completed', [
             'extraction_method' => $payload['method'] ?? null,
             'chars' => $payload['chars'] ?? mb_strlen((string) ($payload['text'] ?? '')),
             'vision_pages_count' => count($visionPages),
             'vision_page_numbers' => $visionPageNumbers,
+            'vision_first_pages_count' => count($visionFirstPages),
+            'vision_first_page_numbers' => $visionFirstPageNumbers,
         ]);
 
         return $payload;

@@ -49,6 +49,18 @@ class ActaController extends Controller
             'escritura_numero' => ['nullable', 'string', 'max:255'],
             'libro_numero' => ['nullable', 'string', 'max:255'],
             'acto' => ['nullable', 'string', 'max:255'],
+            'apoderados' => ['nullable', 'array'],
+            'apoderados.*.nombre_completo' => ['nullable', 'string', 'max:255'],
+            'apoderados.*.ine' => ['nullable', 'string', 'max:255'],
+            'apoderados.*.poder_documento' => ['nullable', 'string', 'max:500'],
+            'apoderados.*.facultades_otorgadas' => ['nullable', 'string', 'max:2000'],
+            'participacion_accionaria' => ['nullable', 'array'],
+            'participacion_accionaria.*.socio' => ['nullable', 'string', 'max:255'],
+            'participacion_accionaria.*.porcentaje' => ['nullable', 'string', 'max:255'],
+            'consejo_administracion' => ['nullable', 'array'],
+            'consejo_administracion.*' => ['nullable', 'string', 'max:255'],
+            'direccion_empresa' => ['nullable', 'array'],
+            'direccion_empresa.*' => ['nullable', 'string', 'max:500'],
         ]);
 
         $documentPath = null;
@@ -73,7 +85,7 @@ class ActaController extends Controller
         }
 
         $acta = $company->actas()->create([
-            ...collect($validated)->except('documento')->all(),
+            ...$this->normalizeActaPayload($validated),
             'documento_path' => $documentPath,
             'documento_original_name' => $request->file('documento')->getClientOriginalName(),
         ]);
@@ -129,9 +141,21 @@ class ActaController extends Controller
             'escritura_numero' => ['nullable', 'string', 'max:255'],
             'libro_numero' => ['nullable', 'string', 'max:255'],
             'acto' => ['nullable', 'string', 'max:255'],
+            'apoderados' => ['nullable', 'array'],
+            'apoderados.*.nombre_completo' => ['nullable', 'string', 'max:255'],
+            'apoderados.*.ine' => ['nullable', 'string', 'max:255'],
+            'apoderados.*.poder_documento' => ['nullable', 'string', 'max:500'],
+            'apoderados.*.facultades_otorgadas' => ['nullable', 'string', 'max:2000'],
+            'participacion_accionaria' => ['nullable', 'array'],
+            'participacion_accionaria.*.socio' => ['nullable', 'string', 'max:255'],
+            'participacion_accionaria.*.porcentaje' => ['nullable', 'string', 'max:255'],
+            'consejo_administracion' => ['nullable', 'array'],
+            'consejo_administracion.*' => ['nullable', 'string', 'max:255'],
+            'direccion_empresa' => ['nullable', 'array'],
+            'direccion_empresa.*' => ['nullable', 'string', 'max:500'],
         ]);
 
-        $payload = collect($validated)->except('documento')->all();
+        $payload = $this->normalizeActaPayload($validated);
         $fileWasReplaced = false;
 
         if ($request->hasFile('documento')) {
@@ -344,5 +368,80 @@ class ActaController extends Controller
         }
 
         return 's3';
+    }
+
+    private function normalizeActaPayload(array $validated): array
+    {
+        return [
+            ...collect($validated)->except([
+                'documento',
+                'apoderados',
+                'participacion_accionaria',
+                'consejo_administracion',
+                'direccion_empresa',
+            ])->all(),
+            'apoderados' => $this->normalizeStructuredEntries($validated['apoderados'] ?? [], [
+                'nombre_completo',
+                'ine',
+                'poder_documento',
+                'facultades_otorgadas',
+            ]),
+            'participacion_accionaria' => $this->normalizeStructuredEntries($validated['participacion_accionaria'] ?? [], [
+                'socio',
+                'porcentaje',
+            ]),
+            'consejo_administracion' => $this->normalizeStringArray($validated['consejo_administracion'] ?? []),
+            'direccion_empresa' => $this->normalizeStringArray($validated['direccion_empresa'] ?? []),
+        ];
+    }
+
+    private function normalizeStructuredEntries(array $items, array $fields): ?array
+    {
+        $normalized = collect($items)
+            ->filter(fn ($item) => is_array($item))
+            ->map(function (array $item) use ($fields): array {
+                $row = [];
+
+                foreach ($fields as $field) {
+                    $row[$field] = $this->normalizeNullableString($item[$field] ?? null);
+                }
+
+                return $row;
+            })
+            ->filter(function (array $row): bool {
+                foreach ($row as $value) {
+                    if ($value !== null) {
+                        return true;
+                    }
+                }
+
+                return false;
+            })
+            ->values()
+            ->all();
+
+        return $normalized === [] ? null : $normalized;
+    }
+
+    private function normalizeStringArray(array $items): ?array
+    {
+        $normalized = collect($items)
+            ->map(fn ($item) => $this->normalizeNullableString($item))
+            ->filter(fn ($item) => $item !== null)
+            ->values()
+            ->all();
+
+        return $normalized === [] ? null : $normalized;
+    }
+
+    private function normalizeNullableString(mixed $value): ?string
+    {
+        if (! is_string($value) && ! is_numeric($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized === '' ? null : $normalized;
     }
 }

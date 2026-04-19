@@ -62,6 +62,12 @@ class DocumentMetadataExtractor
         $retryAttempt = null;
         $visionExtraction = [];
         $visionAttempt = null;
+        $firstPageVisionExtraction = [];
+        $firstPageVisionAttempts = [];
+        $firstPageVisionRecoveries = [];
+        $regexFallbackExtraction = [];
+        $adjudicationAttempt = null;
+        $adjudicationApplied = [];
         $visionAttempted = false;
         $visionTrigger = [
             'enabled' => false,
@@ -70,9 +76,16 @@ class DocumentMetadataExtractor
             'chars' => (int) data_get($options, 'extracted_chars', mb_strlen($text)),
             'pages_available' => is_array($options['vision_pages'] ?? null) ? count($options['vision_pages']) : 0,
         ];
+        $firstPageVisionTrigger = [
+            'enabled' => false,
+            'reasons' => [],
+            'page_numbers' => $options['vision_first_page_numbers'] ?? [],
+            'pages_available' => is_array($options['vision_first_pages'] ?? null) ? count($options['vision_first_pages']) : 0,
+            'target_fields' => [],
+        ];
 
-        $merged = $regexExtraction;
-        $fieldSources = $this->initializeFieldSources($merged, 'regex');
+        $merged = $this->emptyActaExtraction();
+        $fieldSources = [];
         $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
 
         [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $llmExtraction, 'llm', $fieldSources);
@@ -105,7 +118,7 @@ class DocumentMetadataExtractor
             $visionAttempted = true;
             $visionPages = $options['vision_pages'] ?? [];
             if (is_array($visionPages) && ! empty($visionPages)) {
-            $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields'], $options);
+                $visionAttempt = $this->extractActaWithVision($visionPages, $merged['required_missing_fields'], $options);
                 $visionExtraction = $visionAttempt['data'];
                 [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $visionExtraction, 'vision', $fieldSources);
                 $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
@@ -113,10 +126,104 @@ class DocumentMetadataExtractor
             }
         }
 
+        $firstPageVisionTrigger = $this->evaluateFirstPageVisionTrigger($merged, $fieldSources, $fieldConfidence, $options);
+        $this->trace($options, 'metadata.vision.first_trigger', $firstPageVisionTrigger);
+
+        if ($firstPageVisionTrigger['enabled']) {
+            $visionAttempted = true;
+            [$firstPageImages, $firstPageNumbers] = $this->prioritizeFirstPageVisionPages(
+                $options['vision_first_pages'] ?? [],
+                $options['vision_first_page_numbers'] ?? [],
+            );
+
+            foreach ($firstPageImages as $index => $firstPageImage) {
+                $pageNumber = isset($firstPageNumbers[$index]) ? (int) $firstPageNumbers[$index] : null;
+                $pageOptions = array_merge($options, [
+                    'vision_stage' => 'first',
+                    'vision_page_numbers' => $pageNumber ? [$pageNumber] : [],
+                ]);
+
+                $attempt = $this->extractActaWithVision([$firstPageImage], $firstPageVisionTrigger['target_fields'], $pageOptions);
+                $firstPageVisionAttempts[] = $attempt;
+                $candidate = $this->filterExtractionFields($attempt['data'] ?? [], $firstPageVisionTrigger['target_fields']);
+                $firstPageVisionRecoveries[] = [
+                    'source' => 'vision_first',
+                    'label' => 'vision_first_page_'.$pageNumber,
+                    'page_number' => $pageNumber,
+                    'page_numbers' => $pageNumber ? [$pageNumber] : [],
+                    'data' => $candidate,
+                    'meta' => $this->summarizeRecoveryMeta($attempt['meta'] ?? []),
+                ];
+
+                if ($candidate !== []) {
+                    $firstPageVisionExtraction = array_merge($firstPageVisionExtraction, $candidate);
+                    [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $candidate, 'vision_first', $fieldSources);
+                    $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
+                    $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+                }
+
+                if (! $this->shouldContinueFirstPageVision($firstPageVisionExtraction, $firstPageVisionTrigger['target_fields'])) {
+                    break;
+                }
+            }
+        }
+
+        $merged['recovery_candidates'] = $this->buildActaRecoveryCandidates(
+            $merged,
+            $fieldSources,
+            $fieldConfidence,
+            [
+                'regex' => [
+                    'source' => 'regex',
+                    'label' => 'regex',
+                    'data' => $regexExtraction,
+                ],
+                'llm' => [
+                    'source' => 'llm',
+                    'label' => 'llm',
+                    'data' => $llmExtraction,
+                    'meta' => $this->summarizeRecoveryMeta($llmAttempt['meta'] ?? []),
+                ],
+                'llm_retry' => [
+                    'source' => 'llm_retry',
+                    'label' => 'llm_retry',
+                    'data' => $retryExtraction,
+                    'meta' => $this->summarizeRecoveryMeta($retryAttempt['meta'] ?? []),
+                ],
+                'vision' => [
+                    'source' => 'vision',
+                    'label' => 'vision',
+                    'data' => $visionExtraction,
+                    'page_numbers' => array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0)),
+                    'meta' => $this->summarizeRecoveryMeta($visionAttempt['meta'] ?? []),
+                ],
+                ...collect($firstPageVisionRecoveries)->mapWithKeys(static fn (array $recovery) => [
+                    (string) ($recovery['label'] ?? 'vision_first') => $recovery,
+                ])->all(),
+            ],
+        );
+
+        $adjudicationAttempt = $this->adjudicateActaRecoveryCandidates($merged['recovery_candidates'], $options);
+        [$merged, $fieldSources, $adjudicationApplied] = $this->applyActaAdjudicationDecisions(
+            $merged,
+            $fieldSources,
+            $merged['recovery_candidates'],
+            data_get($adjudicationAttempt, 'data.decisions', []),
+        );
+        $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
+        $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+
+        $regexFallbackExtraction = $this->filterFallbackFields($regexExtraction, $merged['required_missing_fields']);
+        if ($regexFallbackExtraction !== []) {
+            [$merged, $fieldSources] = $this->mergeActaExtractionWithConfidence($merged, $regexFallbackExtraction, 'regex', $fieldSources);
+            $fieldConfidence = $this->buildFieldConfidenceMap($merged, $fieldSources);
+            $merged['required_missing_fields'] = $this->missingRequiredActaFields($merged);
+        }
+
         $merged = $this->sanitizeActaScalarFields($merged);
 
         $merged['has_required_missing_fields'] = count($merged['required_missing_fields']) > 0;
-        $source = 'regex';
+        $source = 'base';
         if ($llmExtraction !== []) {
             $source .= '+llm';
         }
@@ -126,28 +233,95 @@ class DocumentMetadataExtractor
         if ($visionExtraction !== []) {
             $source .= '+vision';
         }
+        if ($firstPageVisionExtraction !== []) {
+            $source .= '+vision_first';
+        }
+        if ($adjudicationApplied !== []) {
+            $source .= '+adjudication';
+        }
+        if ($regexFallbackExtraction !== []) {
+            $source .= '+regex_fallback';
+        }
         $merged['extraction_source'] = $source;
         $merged['rag_match_count'] = $this->countRagSnippets($ragContext);
         $merged['rag_queries_used'] = array_keys($ragContext['matches'] ?? []);
         $merged['vision_attempted'] = $visionAttempted;
-        $merged['vision_trigger'] = $visionTrigger;
-        $merged['vision_pages_used'] = (int) data_get($visionAttempt, 'meta.images_used', 0);
-        $merged['vision_page_numbers'] = array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0));
-        $merged['vision_elapsed_ms'] = data_get($visionAttempt, 'meta.elapsed_ms');
-        $merged['vision_budget_ms'] = data_get($visionAttempt, 'meta.budget_ms');
-        $merged['vision_budget_exhausted'] = (bool) data_get($visionAttempt, 'meta.budget_exhausted', false);
-        $merged['vision_attempt_count'] = (int) data_get($visionAttempt, 'meta.attempts', 0);
+        $merged['vision_trigger'] = [
+            'last' => $visionTrigger,
+            'first' => $firstPageVisionTrigger,
+        ];
+        $allVisionAttempts = array_values(array_filter(array_merge(
+            $visionAttempt ? [$visionAttempt] : [],
+            $firstPageVisionAttempts,
+        )));
+        $merged['vision_pages_used'] = array_sum(array_map(static fn ($attempt) => (int) data_get($attempt, 'meta.images_used', 0), $allVisionAttempts));
+        $merged['vision_page_numbers'] = array_values(array_unique(array_merge(
+            array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0)),
+            array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_first_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0))
+        )));
+        $merged['vision_elapsed_ms'] = array_sum(array_map(static fn ($attempt) => (int) data_get($attempt, 'meta.elapsed_ms', 0), $allVisionAttempts));
+        $merged['vision_budget_ms'] = array_sum(array_map(static fn ($attempt) => (int) data_get($attempt, 'meta.budget_ms', 0), $allVisionAttempts));
+        $merged['vision_budget_exhausted'] = collect($allVisionAttempts)->contains(fn ($attempt) => (bool) data_get($attempt, 'meta.budget_exhausted', false));
+        $merged['vision_attempt_count'] = array_sum(array_map(static fn ($attempt) => (int) data_get($attempt, 'meta.attempts', 0), $allVisionAttempts));
         $merged['field_sources'] = $fieldSources;
         $merged['field_confidence'] = $fieldConfidence;
+        $merged['recovery_candidates'] = $this->buildActaRecoveryCandidates(
+            $merged,
+            $fieldSources,
+            $fieldConfidence,
+            [
+                'regex' => [
+                    'source' => 'regex',
+                    'label' => 'regex',
+                    'data' => $regexExtraction,
+                ],
+                'llm' => [
+                    'source' => 'llm',
+                    'label' => 'llm',
+                    'data' => $llmExtraction,
+                    'meta' => $this->summarizeRecoveryMeta($llmAttempt['meta'] ?? []),
+                ],
+                'llm_retry' => [
+                    'source' => 'llm_retry',
+                    'label' => 'llm_retry',
+                    'data' => $retryExtraction,
+                    'meta' => $this->summarizeRecoveryMeta($retryAttempt['meta'] ?? []),
+                ],
+                'vision' => [
+                    'source' => 'vision',
+                    'label' => 'vision',
+                    'data' => $visionExtraction,
+                    'page_numbers' => array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0)),
+                    'meta' => $this->summarizeRecoveryMeta($visionAttempt['meta'] ?? []),
+                ],
+                ...collect($firstPageVisionRecoveries)->mapWithKeys(static fn (array $recovery) => [
+                    (string) ($recovery['label'] ?? 'vision_first') => $recovery,
+                ])->all(),
+            ],
+        );
+        $merged['recovery_candidates']['adjudication'] = [
+            'review_fields' => array_keys(data_get($adjudicationAttempt, 'data.review_fields', [])),
+            'decisions' => $adjudicationApplied,
+            'meta' => $this->summarizeRecoveryMeta($adjudicationAttempt['meta'] ?? []),
+        ];
+        $merged['adjudication'] = [
+            'review_fields' => array_keys(data_get($adjudicationAttempt, 'data.review_fields', [])),
+            'decisions' => $adjudicationApplied,
+            'error' => data_get($adjudicationAttempt, 'meta.error'),
+        ];
         $merged['llm_engine_used'] = array_values(array_unique(array_filter([
             data_get($llmAttempt, 'meta.engine'),
             data_get($retryAttempt, 'meta.engine'),
             data_get($visionAttempt, 'meta.engine'),
+            ...array_map(static fn ($attempt) => data_get($attempt, 'meta.engine'), $firstPageVisionAttempts),
+            data_get($adjudicationAttempt, 'meta.engine'),
         ])));
         $errors = array_values(array_filter([
             data_get($llmAttempt, 'meta.error'),
             data_get($retryAttempt, 'meta.error'),
             data_get($visionAttempt, 'meta.error'),
+            ...array_map(static fn ($attempt) => data_get($attempt, 'meta.error'), $firstPageVisionAttempts),
+            data_get($adjudicationAttempt, 'meta.error'),
         ]));
         $merged['llm_error'] = empty($errors) ? null : implode(' | ', $errors);
 
@@ -155,6 +329,8 @@ class DocumentMetadataExtractor
             'required_missing_fields' => $merged['required_missing_fields'],
             'field_sources' => $fieldSources,
             'field_confidence' => $fieldConfidence,
+            'recovery_candidates' => $merged['recovery_candidates'],
+            'adjudication' => $merged['adjudication'],
             'llm_engine_used' => $merged['llm_engine_used'],
             'llm_error' => $merged['llm_error'],
             'vision_attempted' => $visionAttempted,
@@ -496,11 +672,21 @@ Devuelve SOLO un JSON valido con estas claves (usa null si no aparece evidencia 
 }
 TXT;
 
-        $prompt = "Analiza estas imagenes de las ultimas paginas de un acta corporativa mexicana.\n"
-            ."Extrae SOLO datos con evidencia visual, priorizando sellos del Registro Publico de Comercio y notariales.\n"
-            ."Campos faltantes a priorizar: {$missingBlock}\n"
-            ."No inventes.\n\n"
-            .$schemaHint;
+        $isFirstStage = ($options['vision_stage'] ?? 'last') === 'first';
+
+        $prompt = $isFirstStage
+            ? "Analiza estas imagenes de las primeras paginas de un acta corporativa mexicana.\n"
+                ."Estas primeras paginas pueden estar maquetadas como una tabla o dos columnas sin lineas visibles.\n"
+                ."Busca etiquetas a la izquierda como ESCRITURA NUMERO, LIBRO NUMERO, FECHA y ACTO, y toma el valor que aparece a la derecha aunque continue en la linea siguiente.\n"
+                ."Para ACTO, prioriza exactamente la fila rotulada 'ACTO:' y devuelve el texto societario que aparece enfrente; no devuelvas frases del sello del RPC como 'Inscripcion en el Registro Publico de Comercio'.\n"
+                ."Campos faltantes a priorizar: {$missingBlock}\n"
+                ."No inventes.\n\n"
+                .$schemaHint
+            : "Analiza estas imagenes de las ultimas paginas de un acta corporativa mexicana.\n"
+                ."Extrae SOLO datos con evidencia visual, priorizando sellos del Registro Publico de Comercio y notariales.\n"
+                ."Campos faltantes a priorizar: {$missingBlock}\n"
+                ."No inventes.\n\n"
+                .$schemaHint;
 
         $this->trace($options, 'vision.ollama.request_prepared', [
             'engine' => 'ollama-vision',
@@ -653,6 +839,100 @@ TXT;
             'fecha_inscripcion' => $this->normalizeDate($json['fecha_inscripcion'] ?? null),
             'acto' => $this->clean($json['acto'] ?? null),
         ];
+    }
+
+    private function evaluateFirstPageVisionTrigger(array $data, array $fieldSources, array $fieldConfidence, array $options = []): array
+    {
+        $targetFields = [];
+        $candidateFields = ['fecha_registro', 'escritura_numero', 'libro_numero', 'acto'];
+
+        foreach ($candidateFields as $field) {
+            $value = $data[$field] ?? null;
+            $source = $fieldSources[$field] ?? null;
+            $confidence = (float) ($fieldConfidence[$field] ?? 0.0);
+
+            if (! $this->hasMeaningfulValue($value) || $confidence < 0.85 || $source === 'vision') {
+                $targetFields[] = $field;
+                continue;
+            }
+
+            if ($field === 'acto' && is_string($value) && preg_match('/registro\s+p[uú]blico\s+de\s+comercio/iu', $value) === 1) {
+                $targetFields[] = $field;
+            }
+        }
+
+        $pageNumbers = array_values(array_filter(array_map(static fn ($n) => is_numeric($n) ? (int) $n : null, $options['vision_first_page_numbers'] ?? []), static fn ($n) => is_int($n) && $n > 0));
+        $pages = $options['vision_first_pages'] ?? [];
+
+        return [
+            'enabled' => is_array($pages) && ! empty($pages) && ! empty($targetFields),
+            'reasons' => empty($targetFields) ? ['front_page_fields_already_satisfied'] : ['front_page_fields_need_confirmation'],
+            'target_fields' => $targetFields,
+            'page_numbers' => $pageNumbers,
+            'pages_available' => is_array($pages) ? count($pages) : 0,
+        ];
+    }
+
+    private function prioritizeFirstPageVisionPages(array $pages, array $pageNumbers): array
+    {
+        $entries = [];
+
+        foreach (array_values($pages) as $index => $page) {
+            if (! is_string($page) || trim($page) === '') {
+                continue;
+            }
+
+            $entries[] = [
+                'page' => $page,
+                'number' => isset($pageNumbers[$index]) && is_numeric($pageNumbers[$index]) ? (int) $pageNumbers[$index] : ($index + 1),
+            ];
+        }
+
+        usort($entries, static function (array $left, array $right): int {
+            $leftPriority = $left['number'] === 2 ? 0 : ($left['number'] === 1 ? 1 : 2);
+            $rightPriority = $right['number'] === 2 ? 0 : ($right['number'] === 1 ? 1 : 2);
+
+            if ($leftPriority === $rightPriority) {
+                return $left['number'] <=> $right['number'];
+            }
+
+            return $leftPriority <=> $rightPriority;
+        });
+
+        return [
+            array_values(array_map(static fn (array $entry) => $entry['page'], $entries)),
+            array_values(array_map(static fn (array $entry) => $entry['number'], $entries)),
+        ];
+    }
+
+    private function filterExtractionFields(array $data, array $allowedFields): array
+    {
+        $filtered = [];
+
+        foreach ($allowedFields as $field) {
+            if (array_key_exists($field, $data) && $this->hasMeaningfulValue($data[$field])) {
+                $filtered[$field] = $data[$field];
+            }
+        }
+
+        return $filtered;
+    }
+
+    private function shouldContinueFirstPageVision(array $data, array $targetFields): bool
+    {
+        foreach ($targetFields as $field) {
+            $value = $data[$field] ?? null;
+
+            if (! $this->hasMeaningfulValue($value)) {
+                return true;
+            }
+
+            if ($field === 'acto' && is_string($value) && preg_match('/registro\s+p[uú]blico\s+de\s+comercio/iu', $value) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function evaluateVisionTrigger(array $missingFields, array $options = []): array
@@ -876,7 +1156,7 @@ TXT;
 
             foreach ($items as $item) {
                 $snippet = data_get($item, 'metadata.text');
-                if (is_string($snippet) && trim($snippet) !== '') {
+                if (is_string($snippet) && trim($snippet) !== '' && ! $this->isSyntheticActaSummarySnippet($snippet)) {
                     $snippets[] = trim($snippet);
                 }
             }
@@ -941,6 +1221,18 @@ TXT;
         }
 
         return $count;
+    }
+
+    private function isSyntheticActaSummarySnippet(string $snippet): bool
+    {
+        $normalized = Str::upper(trim($snippet));
+
+        return str_contains($normalized, 'RESUMEN ESTRUCTURADO DEL ACTA')
+            || (str_contains($normalized, 'FECHA DE REGISTRO:')
+                && str_contains($normalized, 'RPC FOLIO:')
+                && str_contains($normalized, 'NOTAR')
+                && str_contains($normalized, 'ESCRITURA N')
+                && str_contains($normalized, 'ACTO:'));
     }
 
     private function mergeActaExtraction(array $regexExtraction, array $llmExtraction): array
@@ -1022,6 +1314,461 @@ TXT;
         return $map;
     }
 
+    private function emptyActaExtraction(): array
+    {
+        return [
+            'fecha_registro' => null,
+            'apoderados' => [],
+            'participacion_accionaria' => [],
+            'rpc_folio' => null,
+            'rpc_fecha_inscripcion' => null,
+            'rpc_lugar' => null,
+            'consejo_administracion' => [],
+            'direccion_empresa' => [],
+            'notaria_numero' => null,
+            'notaria_lugar' => null,
+            'notario_nombre' => null,
+            'escritura_numero' => null,
+            'libro_numero' => null,
+            'fecha_inscripcion' => null,
+            'acto' => null,
+        ];
+    }
+
+    private function filterFallbackFields(array $fallbackData, array $missingFields): array
+    {
+        $filtered = [];
+        $topLevelMissing = array_values(array_unique(array_map(static fn ($field) => explode('.', (string) $field)[0], $missingFields)));
+
+        foreach ($topLevelMissing as $field) {
+            if (! array_key_exists($field, $fallbackData) || ! $this->hasMeaningfulValue($fallbackData[$field])) {
+                continue;
+            }
+
+            $filtered[$field] = $fallbackData[$field];
+        }
+
+        return $filtered;
+    }
+
+    private function buildSourceFieldConfidenceMap(array $data, string $source): array
+    {
+        $map = [];
+
+        foreach ($data as $field => $value) {
+            if (! $this->hasMeaningfulValue($value)) {
+                continue;
+            }
+
+            $map[(string) $field] = $this->fieldConfidenceScore((string) $field, $value, $source);
+        }
+
+        return $map;
+    }
+
+    private function buildActaRecoveryCandidates(array $selectedData, array $fieldSources, array $fieldConfidence, array $recoveries): array
+    {
+        $comparison = [
+            'selection_margin' => 0.05,
+            'selected' => [],
+            'sources' => [],
+            'by_field' => [],
+        ];
+
+        foreach ($this->actaComparableFields() as $field) {
+            if (! isset($fieldSources[$field]) || ! array_key_exists($field, $selectedData) || ! $this->hasMeaningfulValue($selectedData[$field])) {
+                continue;
+            }
+
+            $comparison['selected'][$field] = [
+                'value' => $selectedData[$field],
+                'source' => $fieldSources[$field],
+                'confidence' => $fieldConfidence[$field] ?? 0.0,
+            ];
+        }
+
+        foreach ($recoveries as $sourceKey => $recovery) {
+            $source = (string) ($recovery['source'] ?? $sourceKey);
+            $fieldValues = $this->filterComparableRecoveryData($recovery['data'] ?? []);
+            $sourceConfidence = $this->buildSourceFieldConfidenceMap($fieldValues, $source);
+
+            $comparison['sources'][$sourceKey] = array_filter([
+                'source' => $source,
+                'label' => (string) ($recovery['label'] ?? $sourceKey),
+                'page_number' => $recovery['page_number'] ?? null,
+                'page_numbers' => $recovery['page_numbers'] ?? [],
+                'field_values' => $fieldValues,
+                'field_confidence' => $sourceConfidence,
+                'meta' => $recovery['meta'] ?? null,
+            ], static fn ($value, $key) => ! ($key === 'meta' && $value === null), ARRAY_FILTER_USE_BOTH);
+
+            foreach ($fieldValues as $field => $value) {
+                $comparison['by_field'][$field][] = [
+                    'source' => $source,
+                    'source_key' => (string) $sourceKey,
+                    'label' => (string) ($recovery['label'] ?? $sourceKey),
+                    'page_number' => $recovery['page_number'] ?? null,
+                    'value' => $value,
+                    'confidence' => $sourceConfidence[$field] ?? 0.0,
+                    'selected' => $this->recoveryCandidateMatchesSelection($field, $value, $source, $selectedData, $fieldSources),
+                ];
+            }
+        }
+
+        foreach ($comparison['by_field'] as &$fieldCandidates) {
+            usort($fieldCandidates, static function (array $left, array $right): int {
+                $confidenceComparison = ($right['confidence'] ?? 0.0) <=> ($left['confidence'] ?? 0.0);
+
+                if ($confidenceComparison !== 0) {
+                    return $confidenceComparison;
+                }
+
+                return strcmp((string) ($left['source_key'] ?? ''), (string) ($right['source_key'] ?? ''));
+            });
+        }
+        unset($fieldCandidates);
+
+        return $comparison;
+    }
+
+    private function buildActaAdjudicationPayload(array $recoveryCandidates): array
+    {
+        $payload = [];
+
+        foreach (($recoveryCandidates['by_field'] ?? []) as $field => $candidates) {
+            if (! is_array($candidates)) {
+                continue;
+            }
+
+            if (is_array(data_get($recoveryCandidates, 'selected.'.$field.'.value'))) {
+                continue;
+            }
+
+            $nonRegexCandidates = array_values(array_filter($candidates, static function (array $candidate): bool {
+                if (($candidate['source'] ?? null) === 'regex') {
+                    return false;
+                }
+
+                return ! is_array($candidate['value'] ?? null);
+            }));
+            if (count($nonRegexCandidates) < 2) {
+                continue;
+            }
+
+            $distinctValues = [];
+            foreach ($nonRegexCandidates as $candidate) {
+                $distinctValues[$this->canonicalizeRecoveryValue($candidate['value'] ?? null)] = true;
+            }
+
+            if (count($distinctValues) < 2) {
+                continue;
+            }
+
+            $payload[$field] = [
+                'selected' => $recoveryCandidates['selected'][$field] ?? null,
+                'candidates' => array_map(static fn (array $candidate) => [
+                    'source_key' => $candidate['source_key'] ?? null,
+                    'source' => $candidate['source'] ?? null,
+                    'label' => $candidate['label'] ?? null,
+                    'page_number' => $candidate['page_number'] ?? null,
+                    'value' => $candidate['value'] ?? null,
+                    'confidence' => $candidate['confidence'] ?? 0.0,
+                ], $nonRegexCandidates),
+            ];
+        }
+
+        return $payload;
+    }
+
+    private function adjudicateActaRecoveryCandidates(array $recoveryCandidates, array $options = []): array
+    {
+        $reviewFields = $this->buildActaAdjudicationPayload($recoveryCandidates);
+        if ($reviewFields === []) {
+            return [
+                'data' => [
+                    'review_fields' => [],
+                    'decisions' => [],
+                ],
+                'meta' => [
+                    'engine' => null,
+                    'error' => null,
+                ],
+            ];
+        }
+
+        $engine = config('services.extraction.engine', 'openai');
+
+        if ($engine === 'ollama') {
+            return $this->adjudicateActaRecoveryCandidatesWithOllama($reviewFields, $options);
+        }
+
+        return $this->adjudicateActaRecoveryCandidatesWithOpenAi($reviewFields, $options);
+    }
+
+    private function adjudicateActaRecoveryCandidatesWithOllama(array $reviewFields, array $options = []): array
+    {
+        $model = config('services.ollama.extraction_model', 'qwen2.5:7b-instruct');
+        $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
+        $timeout = (int) config('services.ollama.extraction_timeout', 300);
+
+        $schemaHint = <<<'TXT'
+Devuelve SOLO un JSON válido con esta forma:
+{
+  "decisions": {
+    "nombre_del_campo": {
+      "source_key": "clave exacta de candidato",
+      "reason": "explicacion breve"
+    }
+  }
+}
+TXT;
+
+        $prompt = "Eres un arbitro de extraccion legal de actas corporativas en Mexico.\n"
+            ."Debes escoger el mejor candidato por campo usando los candidatos disponibles.\n"
+            ."Reglas:\n"
+            ."- Prefiere el candidato con mayor confidence si no hay una razon legal o visual fuerte para descartarlo.\n"
+            ."- Regex es solo ultimo recurso; no lo elijas si existe un candidato no-regex util para ese campo.\n"
+            ."- Para acto, fecha_registro, escritura_numero y libro_numero, prioriza vision_first de primeras paginas cuando venga de la tabla frontal o de la fila rotulada correspondiente.\n"
+            ."- Usa exactamente el source_key entregado para cada decision.\n"
+            ."- Devuelve decisiones solo para los campos enviados.\n\n"
+            ."Campos en revision:\n".json_encode($reviewFields, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n\n"
+            .$schemaHint;
+
+        try {
+            $this->trace($options, 'adjudication.ollama.request', [
+                'engine' => 'ollama',
+                'model' => $model,
+                'base_url' => $baseUrl,
+                'timeout_seconds' => $timeout,
+                'review_fields' => $reviewFields,
+                'prompt' => $prompt,
+            ]);
+
+            $response = Http::timeout(max($timeout, 30))->post(rtrim($baseUrl, '/').'/api/generate', [
+                'model' => $model,
+                'prompt' => $prompt,
+                'stream' => false,
+                'format' => 'json',
+                'keep_alive' => 0,
+                'options' => [
+                    'temperature' => 0,
+                ],
+            ]);
+
+            $this->trace($options, 'adjudication.ollama.response', [
+                'engine' => 'ollama',
+                'model' => $model,
+                'http_status' => $response->status(),
+                'body_preview' => mb_substr($response->body(), 0, 12000),
+            ]);
+
+            if (! $response->successful()) {
+                return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'ollama', 'error' => 'http_'.$response->status()]];
+            }
+
+            $raw = data_get($response->json(), 'response');
+            if (! is_string($raw) || trim($raw) === '') {
+                return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'ollama', 'error' => 'empty_response']];
+            }
+
+            $json = json_decode($raw, true);
+            if (! is_array($json)) {
+                return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'ollama', 'error' => 'invalid_json']];
+            }
+
+            return [
+                'data' => [
+                    'review_fields' => $reviewFields,
+                    'decisions' => is_array($json['decisions'] ?? null) ? $json['decisions'] : [],
+                ],
+                'meta' => ['engine' => 'ollama', 'model' => $model, 'error' => null],
+            ];
+        } catch (\Throwable $e) {
+            $this->trace($options, 'adjudication.ollama.exception', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'ollama', 'error' => 'exception: '.$e->getMessage()]];
+        }
+    }
+
+    private function adjudicateActaRecoveryCandidatesWithOpenAi(array $reviewFields, array $options = []): array
+    {
+        $apiKey = config('services.openai.api_key');
+        if (! $apiKey) {
+            return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'openai', 'error' => 'openai_api_key_missing']];
+        }
+
+        $model = config('services.openai.extraction_model', 'gpt-4.1-mini');
+
+        try {
+            $messages = [
+                [
+                    'role' => 'system',
+                    'content' => 'Eres un arbitro de extraccion legal de actas corporativas en Mexico. Elige el mejor candidato por campo. Regex solo puede elegirse si no hay otra fuente util. Responde solo JSON valido con decisions[field].source_key y decisions[field].reason.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => json_encode(['review_fields' => $reviewFields], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
+                ],
+            ];
+
+            $this->trace($options, 'adjudication.openai.request', [
+                'engine' => 'openai',
+                'model' => $model,
+                'review_fields' => $reviewFields,
+            ]);
+
+            $response = Http::withToken($apiKey)
+                ->timeout(90)
+                ->post('https://api.openai.com/v1/chat/completions', [
+                    'model' => $model,
+                    'temperature' => 0,
+                    'response_format' => ['type' => 'json_object'],
+                    'messages' => $messages,
+                ]);
+
+            $this->trace($options, 'adjudication.openai.response', [
+                'engine' => 'openai',
+                'model' => $model,
+                'http_status' => $response->status(),
+                'body_preview' => mb_substr($response->body(), 0, 12000),
+            ]);
+
+            if (! $response->successful()) {
+                return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'openai', 'error' => 'http_'.$response->status()]];
+            }
+
+            $raw = data_get($response->json(), 'choices.0.message.content');
+            $json = is_string($raw) ? json_decode($raw, true) : null;
+            if (! is_array($json)) {
+                return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'openai', 'error' => 'invalid_json']];
+            }
+
+            return [
+                'data' => [
+                    'review_fields' => $reviewFields,
+                    'decisions' => is_array($json['decisions'] ?? null) ? $json['decisions'] : [],
+                ],
+                'meta' => ['engine' => 'openai', 'model' => $model, 'error' => null],
+            ];
+        } catch (\Throwable $e) {
+            $this->trace($options, 'adjudication.openai.exception', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return ['data' => ['review_fields' => $reviewFields, 'decisions' => []], 'meta' => ['engine' => 'openai', 'error' => 'exception: '.$e->getMessage()]];
+        }
+    }
+
+    private function applyActaAdjudicationDecisions(array $merged, array $fieldSources, array $recoveryCandidates, array $decisions): array
+    {
+        $applied = [];
+
+        foreach ($decisions as $field => $decision) {
+            $sourceKey = data_get($decision, 'source_key');
+            if (! is_string($sourceKey) || $sourceKey === '') {
+                continue;
+            }
+
+            $sourceCandidate = $recoveryCandidates['sources'][$sourceKey] ?? null;
+            if (! is_array($sourceCandidate)) {
+                continue;
+            }
+
+            $fieldValues = $sourceCandidate['field_values'] ?? [];
+            if (! is_array($fieldValues) || ! array_key_exists($field, $fieldValues) || ! $this->hasMeaningfulValue($fieldValues[$field])) {
+                continue;
+            }
+
+            $value = $fieldValues[$field];
+            $source = (string) ($sourceCandidate['source'] ?? $sourceKey);
+            $merged[$field] = $value;
+            $fieldSources[$field] = $source;
+            $applied[$field] = [
+                'source_key' => $sourceKey,
+                'source' => $source,
+                'value' => $value,
+                'confidence' => data_get($sourceCandidate, 'field_confidence.'.$field, 0.0),
+                'reason' => data_get($decision, 'reason'),
+            ];
+        }
+
+        return [$merged, $fieldSources, $applied];
+    }
+
+    private function canonicalizeRecoveryValue(mixed $value): string
+    {
+        if (is_array($value)) {
+            return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+        }
+
+        if (is_string($value)) {
+            return trim(mb_strtolower($value));
+        }
+
+        return (string) $value;
+    }
+
+    private function actaComparableFields(): array
+    {
+        return [
+            'fecha_registro',
+            'apoderados',
+            'participacion_accionaria',
+            'rpc_folio',
+            'rpc_fecha_inscripcion',
+            'rpc_lugar',
+            'consejo_administracion',
+            'direccion_empresa',
+            'notaria_numero',
+            'notaria_lugar',
+            'notario_nombre',
+            'escritura_numero',
+            'libro_numero',
+            'fecha_inscripcion',
+            'acto',
+        ];
+    }
+
+    private function filterComparableRecoveryData(array $data): array
+    {
+        $filtered = [];
+
+        foreach ($this->actaComparableFields() as $field) {
+            if (! array_key_exists($field, $data) || ! $this->hasMeaningfulValue($data[$field])) {
+                continue;
+            }
+
+            $filtered[$field] = $data[$field];
+        }
+
+        return $filtered;
+    }
+
+    private function recoveryCandidateMatchesSelection(string $field, mixed $value, string $source, array $selectedData, array $fieldSources): bool
+    {
+        if (($fieldSources[$field] ?? null) !== $source || ! array_key_exists($field, $selectedData)) {
+            return false;
+        }
+
+        return $selectedData[$field] === $value;
+    }
+
+    private function summarizeRecoveryMeta(array $meta): array
+    {
+        return array_filter([
+            'engine' => $meta['engine'] ?? null,
+            'model' => $meta['model'] ?? null,
+            'elapsed_ms' => $meta['elapsed_ms'] ?? null,
+            'attempts' => $meta['attempts'] ?? null,
+            'images_used' => $meta['images_used'] ?? null,
+            'budget_ms' => $meta['budget_ms'] ?? null,
+            'budget_exhausted' => $meta['budget_exhausted'] ?? null,
+            'error' => $meta['error'] ?? null,
+        ], static fn ($value) => $value !== null);
+    }
+
     private function fieldConfidenceScore(string $field, mixed $value, string $source): float
     {
         if (! $this->hasMeaningfulValue($value)) {
@@ -1033,6 +1780,7 @@ TXT;
             'llm' => 0.70,
             'llm_retry' => 0.78,
             'vision' => 0.76,
+            'vision_first' => 0.82,
             default => 0.40,
         };
 
@@ -1047,6 +1795,15 @@ TXT;
             'escritura_numero',
             'libro_numero',
             'fecha_inscripcion',
+        ], true)) {
+            $sourceBase += 0.10;
+        }
+
+        if ($source === 'vision_first' && in_array($field, [
+            'fecha_registro',
+            'escritura_numero',
+            'libro_numero',
+            'acto',
         ], true)) {
             $sourceBase += 0.10;
         }

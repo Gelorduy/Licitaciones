@@ -84,6 +84,44 @@ def extract_last_pages_as_base64(
     return base64_images
 
 
+def extract_pages_as_base64(
+    pdf_path: str,
+    page_numbers: list[int],
+    max_width: int = 1400,
+    quality: int = 70,
+) -> list[str]:
+    if not page_numbers:
+        return []
+
+    base64_images: list[str] = []
+    for page_number in page_numbers:
+        images = convert_from_path(pdf_path, dpi=180, first_page=page_number, last_page=page_number)
+        if not images:
+            continue
+
+        image = images[0]
+        if image.width > max_width:
+            ratio = max_width / float(image.width)
+            new_height = int(image.height * ratio)
+            image = image.resize((max_width, new_height))
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        buff = BytesIO()
+        image.save(buff, format="JPEG", quality=quality, optimize=True)
+        base64_images.append(base64.b64encode(buff.getvalue()).decode("utf-8"))
+
+    return base64_images
+
+
+def select_first_pages(total_pages: int, max_pages: int = 3) -> list[int]:
+    if total_pages <= 0 or max_pages <= 0:
+        return []
+
+    return list(range(1, min(total_pages, max_pages) + 1))
+
+
 def page_registry_score(text: str) -> int:
     if not text:
         return 0
@@ -178,12 +216,22 @@ def main() -> int:
             text = extract_ocr(pdf_path, lang)
             method = "ocr"
 
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
         vision_page_numbers = select_vision_pages(pdf_path, max_pages=vision_pages, scan_pages=vision_scan_pages)
+        vision_first_page_numbers = select_first_pages(total_pages, max_pages=max(vision_pages, 3))
 
         vision_pages_payload = extract_last_pages_as_base64(
             pdf_path,
             max_pages=vision_pages,
             scan_pages=vision_scan_pages,
+            max_width=vision_max_width,
+            quality=vision_quality,
+        )
+
+        vision_first_pages_payload = extract_pages_as_base64(
+            pdf_path,
+            page_numbers=vision_first_page_numbers,
             max_width=vision_max_width,
             quality=vision_quality,
         )
@@ -196,6 +244,8 @@ def main() -> int:
                     "text": text,
                     "vision_pages": vision_pages_payload,
                     "vision_page_numbers": vision_page_numbers,
+                    "vision_first_pages": vision_first_pages_payload,
+                    "vision_first_page_numbers": vision_first_page_numbers,
                 },
                 ensure_ascii=False,
             )
