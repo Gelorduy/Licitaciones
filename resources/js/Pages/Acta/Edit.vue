@@ -383,6 +383,9 @@ const requestReextract = () => {
                                     <Link :href="route('acta.text.view', [company.id, acta.id])">
                                         <Button label="Ver texto OCR" size="small" severity="info" text />
                                     </Link>
+                                    <Link :href="route('acta.pinecone.view', [company.id, acta.id])">
+                                        <Button label="Ver datos Pinecone" size="small" severity="help" text />
+                                    </Link>
                                 </div>
                             </div>
 

@@ -6,6 +6,7 @@ use App\Jobs\ProcessUploadedPdfJob;
 use App\Models\Acta;
 use App\Models\Company;
 use App\Models\SystemEventLog;
+use App\Services\PineconeDocumentInspector;
 use App\Services\SystemEventLogger;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -271,6 +272,48 @@ class ActaController extends Controller
             'vectorIndexError' => $index?->vector_index_error,
             'extractedText' => $index?->extracted_text,
             'metadata' => $index?->metadata,
+            'backUrl' => route('acta.edit', [$company->id, $acta->id]),
+            'backLabel' => 'Volver a edición de acta',
+        ]);
+    }
+
+    public function viewPineconeData(
+        Request $request,
+        Company $company,
+        Acta $acta,
+        PineconeDocumentInspector $pineconeDocumentInspector,
+    ): Response {
+        abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
+
+        $index = $acta->documentIndex;
+        $pineconeData = $index
+            ? $pineconeDocumentInspector->inspectDocumentIndex($index)
+            : [
+                'available' => false,
+                'namespace' => 'licitaciones-acta',
+                'baseId' => 'acta-'.$acta->id,
+                'indexHost' => null,
+                'vectorIds' => [],
+                'vectorIdCount' => 0,
+                'records' => [],
+                'recordCount' => 0,
+                'errors' => ['This acta does not have a DocumentIndex record yet.'],
+            ];
+
+        SystemEventLogger::log('acta.pinecone_viewed', [
+            'company_id' => $company->id,
+            'acta_id' => $acta->id,
+            'vector_count' => $pineconeData['recordCount'] ?? 0,
+        ], $request, null, Acta::class, $acta->id);
+
+        return Inertia::render('Document/PineconeData', [
+            'documentLabel' => 'Acta',
+            'documentName' => $acta->documento_original_name ?: basename((string) $acta->documento_path),
+            'status' => $index?->status,
+            'extractionMethod' => $index?->extraction_method,
+            'chunkCount' => $index?->chunk_count,
+            'vectorIndexError' => $index?->vector_index_error,
+            'pineconeData' => $pineconeData,
             'backUrl' => route('acta.edit', [$company->id, $acta->id]),
             'backLabel' => 'Volver a edición de acta',
         ]);
