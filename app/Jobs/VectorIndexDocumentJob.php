@@ -37,7 +37,7 @@ class VectorIndexDocumentJob implements ShouldQueue
             return;
         }
 
-        $text = trim((string) ($index->extracted_text ?? ''));
+        $text = trim((string) ($index->index_text ?? $index->extracted_text ?? ''));
 
         if ($text === '') {
             Log::warning('VectorIndexDocumentJob: no extracted text, skipping.', ['id' => $this->documentIndexId]);
@@ -46,7 +46,7 @@ class VectorIndexDocumentJob implements ShouldQueue
         }
 
         try {
-            $chunks = $this->chunkText($text);
+            $chunks = $this->chunkTextForIndex($text);
 
             $indexed = $vectorIndexer->index(
                 namespace: 'licitaciones-'.$index->document_type,
@@ -96,5 +96,84 @@ class VectorIndexDocumentJob implements ShouldQueue
         }
 
         return array_values(array_filter($chunks));
+    }
+
+    private function chunkTextForIndex(string $text, int $chunkSize = 1200): array
+    {
+        $text = trim(str_replace(["\r\n", "\r"], "\n", $text));
+
+        if ($text === '') {
+            return [];
+        }
+
+        $paragraphs = preg_split('/\n\s*\n/u', $text) ?: [];
+        $paragraphs = array_values(array_filter(array_map(static function (string $paragraph): string {
+            $lines = preg_split('/\n/u', $paragraph) ?: [];
+            $lines = array_values(array_filter(array_map(static fn (string $line): string => trim($line), $lines), static fn (string $line): bool => $line !== ''));
+
+            return implode("\n", $lines);
+        }, $paragraphs), static fn (string $paragraph): bool => $paragraph !== ''));
+
+        if ($paragraphs === []) {
+            return $this->chunkText($text, $chunkSize);
+        }
+
+        $chunks = [];
+        $currentChunk = '';
+
+        foreach ($paragraphs as $paragraph) {
+            $candidate = $currentChunk === '' ? $paragraph : $currentChunk."\n\n".$paragraph;
+
+            if (mb_strlen($candidate) <= $chunkSize) {
+                $currentChunk = $candidate;
+                continue;
+            }
+
+            if ($currentChunk !== '') {
+                $chunks[] = $currentChunk;
+            }
+
+            if (mb_strlen($paragraph) <= $chunkSize) {
+                $currentChunk = $paragraph;
+                continue;
+            }
+
+            $paragraphLines = preg_split('/\n/u', $paragraph) ?: [];
+            $lineBuffer = '';
+            foreach ($paragraphLines as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+
+                $lineCandidate = $lineBuffer === '' ? $line : $lineBuffer."\n".$line;
+                if (mb_strlen($lineCandidate) <= $chunkSize) {
+                    $lineBuffer = $lineCandidate;
+                    continue;
+                }
+
+                if ($lineBuffer !== '') {
+                    $chunks[] = $lineBuffer;
+                }
+
+                if (mb_strlen($line) <= $chunkSize) {
+                    $lineBuffer = $line;
+                    continue;
+                }
+
+                foreach ($this->chunkText($line, $chunkSize, 0) as $lineChunk) {
+                    $chunks[] = $lineChunk;
+                }
+                $lineBuffer = '';
+            }
+
+            $currentChunk = $lineBuffer;
+        }
+
+        if ($currentChunk !== '') {
+            $chunks[] = $currentChunk;
+        }
+
+        return array_values(array_filter(array_map('trim', $chunks)));
     }
 }

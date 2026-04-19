@@ -40,7 +40,7 @@ class RequeueDocumentIndexing extends Command
 
         if ($dryRun) {
             foreach ($records as $record) {
-                $hasText = ! empty($record->extracted_text);
+                $hasText = ! empty($record->index_text) || ! empty($record->extracted_text);
                 $jobType = ($status === 'processed' && $hasText) ? 'VectorIndexDocumentJob' : 'ProcessUploadedPdfJob';
                 $this->line("  [DRY-RUN] id={$record->id} type={$record->document_type} doc_id={$record->documentable_id} job={$jobType}");
             }
@@ -54,7 +54,7 @@ class RequeueDocumentIndexing extends Command
             // For 'processed' records that already have extracted text, use the
             // lightweight VectorIndexDocumentJob to skip re-running OCR.
             // For 'failed' records (no text), run the full pipeline from scratch.
-            if ($status === 'processed' && ! empty($record->extracted_text)) {
+            if ($status === 'processed' && (! empty($record->index_text) || ! empty($record->extracted_text))) {
                 VectorIndexDocumentJob::dispatch($record->id);
                 $this->line("  Dispatched VectorIndexDocumentJob for id={$record->id} ({$record->document_type} #{$record->documentable_id})");
             } else {

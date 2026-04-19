@@ -101,16 +101,20 @@ class ProcessUploadedPdfJob implements ShouldQueue
             @unlink($tmp);
 
             $text = trim((string) ($extracted['text'] ?? ''));
+            $indexText = trim((string) ($extracted['index_text'] ?? $text));
 
             if ($text === '') {
                 throw new \RuntimeException('No text extracted from PDF.');
             }
 
             $chunks = $this->chunkText($text);
+            $indexChunks = $this->chunkTextForIndex($indexText);
 
             $trace->record('text.chunked', 'info', [
                 'chunk_count' => count($chunks),
+                'index_chunk_count' => count($indexChunks),
                 'text_chars' => mb_strlen($text),
+                'index_text_chars' => mb_strlen($indexText),
                 'extraction_method' => $extracted['method'] ?? 'unknown',
                 'vision_page_numbers' => $extracted['vision_page_numbers'] ?? [],
                 'vision_first_page_numbers' => $extracted['vision_first_page_numbers'] ?? [],
@@ -147,10 +151,11 @@ class ProcessUploadedPdfJob implements ShouldQueue
             $index->update([
                 'extraction_method' => (string) ($extracted['method'] ?? 'unknown'),
                 'extracted_text' => $text,
+                'index_text' => $indexText,
                 'metadata' => array_merge($metadata, [
                     'processing_trace' => $processingTraceReference,
                 ]),
-                'chunk_count' => count($chunks),
+                'chunk_count' => count($indexChunks),
                 'status' => 'processed',
                 'error_message' => null,
                 'vector_index_error' => null,
@@ -178,7 +183,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
             $jobSummary = [
                 'status' => 'processed',
                 'text_chars' => mb_strlen($text),
-                'chunk_count' => count($chunks),
+                'chunk_count' => count($indexChunks),
                 'missing_fields' => $metadata['required_missing_fields'] ?? [],
             ];
         } catch (\Throwable $e) {
@@ -218,13 +223,13 @@ class ProcessUploadedPdfJob implements ShouldQueue
             $trace->record('vector_index.start', 'info', [
                 'namespace' => 'licitaciones-'.$this->documentType,
                 'base_id' => $this->documentType.'-'.$this->documentId,
-                'chunk_count' => count($chunks),
+                'chunk_count' => count($indexChunks),
             ]);
 
             $indexed = $vectorIndexer->index(
                 namespace: 'licitaciones-'.$this->documentType,
                 baseId: $this->documentType.'-'.$this->documentId,
-                chunks: $chunks,
+                chunks: $indexChunks,
                 metadata: [
                     'document_type' => $this->documentType,
                     'document_id' => $this->documentId,
@@ -470,6 +475,85 @@ class ProcessUploadedPdfJob implements ShouldQueue
         }
 
         return array_values(array_filter($chunks));
+    }
+
+    private function chunkTextForIndex(string $text, int $chunkSize = 1200): array
+    {
+        $text = trim(str_replace(["\r\n", "\r"], "\n", $text));
+
+        if ($text === '') {
+            return [];
+        }
+
+        $paragraphs = preg_split('/\n\s*\n/u', $text) ?: [];
+        $paragraphs = array_values(array_filter(array_map(static function (string $paragraph): string {
+            $lines = preg_split('/\n/u', $paragraph) ?: [];
+            $lines = array_values(array_filter(array_map(static fn (string $line): string => trim($line), $lines), static fn (string $line): bool => $line !== ''));
+
+            return implode("\n", $lines);
+        }, $paragraphs), static fn (string $paragraph): bool => $paragraph !== ''));
+
+        if ($paragraphs === []) {
+            return $this->chunkText($text, $chunkSize);
+        }
+
+        $chunks = [];
+        $currentChunk = '';
+
+        foreach ($paragraphs as $paragraph) {
+            $candidate = $currentChunk === '' ? $paragraph : $currentChunk."\n\n".$paragraph;
+
+            if (mb_strlen($candidate) <= $chunkSize) {
+                $currentChunk = $candidate;
+                continue;
+            }
+
+            if ($currentChunk !== '') {
+                $chunks[] = $currentChunk;
+            }
+
+            if (mb_strlen($paragraph) <= $chunkSize) {
+                $currentChunk = $paragraph;
+                continue;
+            }
+
+            $paragraphLines = preg_split('/\n/u', $paragraph) ?: [];
+            $lineBuffer = '';
+            foreach ($paragraphLines as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+
+                $lineCandidate = $lineBuffer === '' ? $line : $lineBuffer."\n".$line;
+                if (mb_strlen($lineCandidate) <= $chunkSize) {
+                    $lineBuffer = $lineCandidate;
+                    continue;
+                }
+
+                if ($lineBuffer !== '') {
+                    $chunks[] = $lineBuffer;
+                }
+
+                if (mb_strlen($line) <= $chunkSize) {
+                    $lineBuffer = $line;
+                    continue;
+                }
+
+                foreach ($this->chunkText($line, $chunkSize, 0) as $lineChunk) {
+                    $chunks[] = $lineChunk;
+                }
+                $lineBuffer = '';
+            }
+
+            $currentChunk = $lineBuffer;
+        }
+
+        if ($currentChunk !== '') {
+            $chunks[] = $currentChunk;
+        }
+
+        return array_values(array_filter(array_map('trim', $chunks)));
     }
 
     private function structuredSummaryForIndex(string $documentType, array $metadata): ?string

@@ -77,6 +77,56 @@ def normalize_ocr_candidate(text: str) -> str:
     return "\n".join(normalized_lines)
 
 
+def is_noisy_ocr_line(line: str) -> bool:
+    normalized = line.strip()
+    if normalized == "":
+        return False
+
+    if re.fullmatch(r"[-—_=~.*,:;|\\/()\[\]{}'\"`]+", normalized) is not None:
+        return True
+
+    alnum_count = sum(1 for char in normalized if char.isalnum())
+    alpha_count = sum(1 for char in normalized if char.isalpha())
+    symbol_count = sum(1 for char in normalized if not char.isalnum() and not char.isspace())
+
+    if alnum_count == 0 and symbol_count >= 4:
+        return True
+
+    if alpha_count < 3 and symbol_count > alnum_count:
+        return True
+
+    return False
+
+
+def build_ocr_index_text(page_texts: list[str]) -> str:
+    kept_lines: list[str] = []
+    previous_blank = False
+
+    for page_text in page_texts:
+        for line in page_text.split("\n"):
+            if is_noisy_ocr_line(line):
+                continue
+
+            normalized = line.strip()
+            if normalized == "":
+                if kept_lines and not previous_blank:
+                    kept_lines.append("")
+                previous_blank = True
+                continue
+
+            kept_lines.append(normalized)
+            previous_blank = False
+
+        if kept_lines and not previous_blank:
+            kept_lines.append("")
+            previous_blank = True
+
+    while kept_lines and kept_lines[-1] == "":
+        kept_lines.pop()
+
+    return "\n".join(kept_lines)
+
+
 def extract_native(pdf_path: str) -> str:
     reader = PdfReader(pdf_path)
     parts = []
@@ -150,7 +200,7 @@ def extract_ocr_page(image, lang: str, page_number: int) -> str:
     return candidates[0][2] if candidates else ""
 
 
-def extract_ocr(pdf_path: str, lang: str) -> str:
+def extract_ocr_page_texts(pdf_path: str, lang: str) -> list[str]:
     images = convert_from_path(pdf_path, dpi=300)
     text_parts = []
     for page_number, image in enumerate(images, start=1):
@@ -158,7 +208,18 @@ def extract_ocr(pdf_path: str, lang: str) -> str:
         if page_text:
             text_parts.append(page_text)
 
+    return text_parts
+
+
+def extract_ocr(pdf_path: str, lang: str) -> str:
+    text_parts = extract_ocr_page_texts(pdf_path, lang)
+
     return normalize_text("\n\n".join(text_parts))
+
+
+def extract_ocr_index_text(pdf_path: str, lang: str) -> str:
+    text_parts = extract_ocr_page_texts(pdf_path, lang)
+    return build_ocr_index_text(text_parts)
 
 
 def extract_last_pages_as_base64(
@@ -317,6 +378,7 @@ def main() -> int:
 
     try:
         text = ""
+        index_text = ""
         method = "native"
 
         try:
@@ -324,9 +386,13 @@ def main() -> int:
         except Exception:
             text = ""
 
+        index_text = text
+
         # If native extraction is empty/too short or failed, fallback to OCR.
         if len(text) < 120:
-            text = extract_ocr(pdf_path, lang)
+            ocr_page_texts = extract_ocr_page_texts(pdf_path, lang)
+            text = normalize_text("\n\n".join(ocr_page_texts))
+            index_text = build_ocr_index_text(ocr_page_texts)
             method = "ocr"
 
         reader = PdfReader(pdf_path)
@@ -355,6 +421,7 @@ def main() -> int:
                     "method": method,
                     "chars": len(text),
                     "text": text,
+                    "index_text": index_text,
                     "vision_pages": vision_pages_payload,
                     "vision_page_numbers": vision_page_numbers,
                     "vision_first_pages": vision_first_pages_payload,

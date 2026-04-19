@@ -21,6 +21,7 @@ class DocumentIndex extends Model
         'storage_path',
         'extraction_method',
         'extracted_text',
+        'index_text',
         'metadata',
         'chunk_count',
         'indexed_at',
