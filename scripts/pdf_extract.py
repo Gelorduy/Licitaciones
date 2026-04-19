@@ -7,6 +7,7 @@ import base64
 from io import BytesIO
 from pypdf import PdfReader
 from pdf2image import convert_from_path
+from PIL import ImageFilter, ImageOps
 import pytesseract
 
 
@@ -22,11 +23,52 @@ VISION_KEYWORDS = {
     "instrumento": 2,
 }
 
+OCR_KEYWORDS = {
+    "ESCRITURA": 4,
+    "LIBRO": 4,
+    "FECHA": 4,
+    "ACTO": 5,
+    "REGISTRO PUBLICO DE COMERCIO": 5,
+    "FOLIO MERCANTIL": 5,
+    "NOTARIA": 4,
+    "NOTARIO": 4,
+    "CONSTITUCION": 4,
+    "CONSTITUCIÓN": 4,
+}
+
+OCR_FIELD_PATTERNS = [
+    (r"\bESCRITURA\b.{0,24}\d", 4),
+    (r"\bLIBRO\b.{0,24}\d", 4),
+    (r"\bFECHA\b.{0,40}\d", 4),
+    (r"\bACTO\b.{0,80}(CONSTITUCION|CONSTITUCIÓN|SOCIEDAD|S\.A\.)", 6),
+    (r"REGISTRO\s+PUBLICO\s+DE\s+COMERCIO", 5),
+]
+
+OCR_LAYOUT_PRIORITY_PAGES = 3
+OCR_ACCEPTABLE_SCORE = 12
+
 
 def normalize_text(text: str) -> str:
     text = text or ""
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    normalized_lines: list[str] = []
+    previous_blank = False
+    for raw_line in text.split("\n"):
+        line = re.sub(r"[ \t\xa0]+", " ", raw_line).strip()
+        if line == "":
+            if normalized_lines and not previous_blank:
+                normalized_lines.append("")
+            previous_blank = True
+            continue
+
+        normalized_lines.append(line)
+        previous_blank = False
+
+    while normalized_lines and normalized_lines[-1] == "":
+        normalized_lines.pop()
+
+    return "\n".join(normalized_lines)
 
 
 def extract_native(pdf_path: str) -> str:
@@ -37,15 +79,80 @@ def extract_native(pdf_path: str) -> str:
             parts.append(page.extract_text() or "")
         except Exception:
             parts.append("")
-    return normalize_text("\n".join(parts))
+    return normalize_text("\n\n".join(parts))
+
+
+def preprocess_ocr_image(image):
+    image = ImageOps.grayscale(image)
+    image = ImageOps.autocontrast(image)
+    image = image.filter(ImageFilter.SHARPEN)
+
+    # A light threshold improves high-contrast document labels without fully erasing thin characters.
+    return image.point(lambda pixel: 255 if pixel > 170 else 0)
+
+
+def score_ocr_text(text: str) -> int:
+    if not text:
+        return 0
+
+    upper_text = text.upper()
+    score = 0
+
+    for keyword, weight in OCR_KEYWORDS.items():
+        score += upper_text.count(keyword) * weight
+
+    for pattern, weight in OCR_FIELD_PATTERNS:
+        if re.search(pattern, upper_text) is not None:
+            score += weight
+
+    score += page_registry_score(text)
+
+    non_space_chars = len(re.sub(r"\s+", "", text))
+    if non_space_chars > 0:
+        alnum_chars = sum(1 for char in text if char.isalnum())
+        score += int(6 * (alnum_chars / non_space_chars))
+
+    score += min(len(text) // 120, 4)
+
+    return score
+
+
+def run_ocr_variant(image, lang: str, config: str = "") -> str:
+    text = pytesseract.image_to_string(image, lang=lang, config=config)
+    return normalize_text(text)
+
+
+def extract_ocr_page(image, lang: str, page_number: int) -> str:
+    base_image = image if image.mode == "RGB" else image.convert("RGB")
+    preprocessed_image = preprocess_ocr_image(base_image)
+
+    candidates: list[tuple[int, int, str]] = []
+
+    default_text = run_ocr_variant(base_image, lang)
+    candidates.append((score_ocr_text(default_text), len(default_text), default_text))
+
+    should_try_layout_variants = page_number <= OCR_LAYOUT_PRIORITY_PAGES or candidates[0][0] < OCR_ACCEPTABLE_SCORE
+    if should_try_layout_variants:
+        for config in [
+            "--oem 3 --psm 6 -c preserve_interword_spaces=1",
+            "--oem 3 --psm 4 -c preserve_interword_spaces=1",
+        ]:
+            variant_text = run_ocr_variant(preprocessed_image, lang, config=config)
+            candidates.append((score_ocr_text(variant_text), len(variant_text), variant_text))
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2] if candidates else ""
 
 
 def extract_ocr(pdf_path: str, lang: str) -> str:
-    images = convert_from_path(pdf_path, dpi=250)
+    images = convert_from_path(pdf_path, dpi=300)
     text_parts = []
-    for image in images:
-        text_parts.append(pytesseract.image_to_string(image, lang=lang))
-    return normalize_text("\n".join(text_parts))
+    for page_number, image in enumerate(images, start=1):
+        page_text = extract_ocr_page(image, lang, page_number)
+        if page_text:
+            text_parts.append(page_text)
+
+    return normalize_text("\n\n".join(text_parts))
 
 
 def extract_last_pages_as_base64(
