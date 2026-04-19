@@ -50,6 +50,12 @@ OCR_ACCEPTABLE_SCORE = 12
 
 def normalize_text(text: str) -> str:
     text = text or ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def normalize_ocr_candidate(text: str) -> str:
+    text = text or ""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     normalized_lines: list[str] = []
@@ -119,7 +125,7 @@ def score_ocr_text(text: str) -> int:
 
 def run_ocr_variant(image, lang: str, config: str = "") -> str:
     text = pytesseract.image_to_string(image, lang=lang, config=config)
-    return normalize_text(text)
+    return normalize_ocr_candidate(text)
 
 
 def extract_ocr_page(image, lang: str, page_number: int) -> str:
