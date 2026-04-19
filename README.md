@@ -70,11 +70,20 @@ docker compose exec app php artisan queue:failed
 La extraccion de actas ya no depende de una sola fuente. El pipeline actual combina:
 
 - texto nativo del PDF y OCR cuando hace falta,
+- separacion entre `extracted_text` (estable para UI/extraccion) e `index_text` (optimizado para retrieval),
 - recuperacion contextual via Pinecone (RAG),
 - vision sobre ultimas paginas para sellos RPC / notariales,
 - vision sobre primeras paginas con prioridad a la pagina 2 para `fecha_registro`, `escritura_numero`, `libro_numero` y `acto`,
 - adjudicacion AI entre candidatos por campo usando confianza por fuente,
-- regex solo como ultimo recurso para campos aun vacios.
+- regex solo como ultimo recurso para campos aun vacios,
+- normalizacion OCR adicional para convenciones notariales mexicanas (`--` y placeholders `~` frecuentes).
+
+Para indexacion vectorial de actas:
+
+- los chunks exactos de Pinecone se persisten en `document_index.metadata.index_chunk_payloads`,
+- el mapeo chunk -> paginas fuente se persiste en `document_index.metadata.index_chunk_page_map`,
+- cada vector incluye metadata de pagina (`page_ids`, `page_numbers_csv`, `primary_page`),
+- el indexador elimina vectores obsoletos cuando cambia la cantidad de chunks de un documento.
 
 Para cada acta procesada se persisten en `document_index.metadata`:
 
@@ -83,6 +92,8 @@ Para cada acta procesada se persisten en `document_index.metadata`:
 - `recovery_candidates`
 - `adjudication`
 - `processing_trace`
+- `index_chunk_payloads`
+- `index_chunk_page_map`
 
 La UI de edicion del acta expone todos los campos recuperados actualmente, incluidos arreglos editables para:
 
@@ -91,4 +102,19 @@ La UI de edicion del acta expone todos los campos recuperados actualmente, inclu
 - `consejo_administracion[*]`
 - `direccion_empresa[*]`
 
-Si necesitas inspeccionar el detalle del procesamiento, la vista de edicion del acta permite abrir el OCR, descargar la traza JSON y revisar las diferencias entre valores guardados y valores sugeridos por AI.
+Si necesitas inspeccionar el detalle del procesamiento, la vista de edicion del acta permite:
+
+- abrir el OCR,
+- abrir la vista de datos Pinecone del documento,
+- descargar la traza JSON,
+- revisar las diferencias entre valores guardados y valores sugeridos por AI.
+
+La vista de Pinecone de Acta muestra:
+
+- IDs de vectores,
+- registros exactos recuperados desde Pinecone,
+- texto guardado por chunk,
+- metadata vectorial,
+- paginas de origen por chunk,
+- score heuristico de sospecha por chunk,
+- correcciones manuales por chunk con intento de vision y fallback a OCR dirigido sobre las paginas exactas del chunk.

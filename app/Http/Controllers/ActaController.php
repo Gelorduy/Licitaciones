@@ -6,6 +6,7 @@ use App\Jobs\ProcessUploadedPdfJob;
 use App\Models\Acta;
 use App\Models\Company;
 use App\Models\SystemEventLog;
+use App\Services\ActaPineconeChunkCorrector;
 use App\Services\PineconeDocumentInspector;
 use App\Services\SystemEventLogger;
 use Illuminate\Http\RedirectResponse;
@@ -314,9 +315,66 @@ class ActaController extends Controller
             'chunkCount' => $index?->chunk_count,
             'vectorIndexError' => $index?->vector_index_error,
             'pineconeData' => $pineconeData,
+            'chunkCorrection' => [
+                'enabled' => true,
+                'routeName' => 'acta.pinecone.chunk.correct',
+                'routeParamsBase' => [$company->id, $acta->id],
+            ],
             'backUrl' => route('acta.edit', [$company->id, $acta->id]),
             'backLabel' => 'Volver a edición de acta',
         ]);
+    }
+
+    public function correctPineconeChunk(
+        Request $request,
+        Company $company,
+        Acta $acta,
+        int $chunkIndex,
+        ActaPineconeChunkCorrector $actaPineconeChunkCorrector,
+    ): RedirectResponse {
+        abort_unless($company->user_id === $request->user()->id && $acta->company_id === $company->id, 403);
+
+        try {
+            $result = $actaPineconeChunkCorrector->correctChunk($acta, $chunkIndex);
+
+            SystemEventLogger::log('acta.pinecone_chunk_corrected', [
+                'company_id' => $company->id,
+                'acta_id' => $acta->id,
+                'chunk_index' => $chunkIndex,
+                'page_numbers' => $result['pageNumbers'] ?? [],
+                'indexed' => $result['indexed'] ?? false,
+                'changed' => $result['changed'] ?? false,
+            ], $request, null, Acta::class, $acta->id);
+
+            if (! ($result['changed'] ?? false)) {
+                return redirect()
+                    ->route('acta.pinecone.view', [$company->id, $acta->id])
+                    ->with('success', 'La corrección del chunk no produjo cambios en el texto seleccionado.');
+            }
+
+            $engine = (string) ($result['engine'] ?? '');
+            if ($result['indexed'] ?? false) {
+                $message = $engine === 'targeted-ocr'
+                    ? 'Chunk corregido con OCR dirigido y Pinecone reindexado correctamente.'
+                    : 'Chunk corregido con visión y Pinecone reindexado correctamente.';
+
+                return redirect()
+                    ->route('acta.pinecone.view', [$company->id, $acta->id])
+                    ->with('success', $message);
+            }
+
+            $message = $engine === 'targeted-ocr'
+                ? 'La corrección con OCR dirigido se guardó, pero Pinecone no pudo reindexarse automáticamente.'
+                : 'La corrección del chunk se guardó, pero Pinecone no pudo reindexarse automáticamente.';
+
+            return redirect()
+                ->route('acta.pinecone.view', [$company->id, $acta->id])
+                ->with('error', $message);
+        } catch (\Throwable $e) {
+            return redirect()
+                ->route('acta.pinecone.view', [$company->id, $acta->id])
+                ->with('error', $e->getMessage());
+        }
     }
 
     public function downloadTrace(Request $request, Company $company, Acta $acta): StreamedResponse

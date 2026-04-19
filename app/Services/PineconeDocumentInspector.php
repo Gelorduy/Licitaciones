@@ -8,6 +8,10 @@ use Illuminate\Support\Facades\Http;
 
 class PineconeDocumentInspector
 {
+    public function __construct(private readonly DocumentChunkQualityAnalyzer $chunkQualityAnalyzer)
+    {
+    }
+
     public function inspectDocumentIndex(DocumentIndex $index): array
     {
         $namespace = 'licitaciones-'.$index->document_type;
@@ -24,6 +28,8 @@ class PineconeDocumentInspector
             'vectorIdCount' => 0,
             'records' => [],
             'recordCount' => 0,
+            'suspiciousCount' => 0,
+            'correctedCount' => 0,
             'errors' => [],
         ];
 
@@ -92,6 +98,8 @@ class PineconeDocumentInspector
 
         $result['records'] = $records;
         $result['recordCount'] = count($records);
+        $result['suspiciousCount'] = count(array_filter($records, static fn (array $record): bool => (bool) data_get($record, 'quality.suspicious', false)));
+        $result['correctedCount'] = count(array_filter($records, static fn (array $record): bool => (bool) data_get($record, 'quality.corrected', false)));
         $result['available'] = true;
 
         return $result;
@@ -196,6 +204,8 @@ class PineconeDocumentInspector
         $pageNumbers = is_scalar($metadata['page_numbers_csv'] ?? null)
             ? trim((string) $metadata['page_numbers_csv'])
             : null;
+        $text = is_string($metadata['text'] ?? null) ? $metadata['text'] : null;
+        $quality = $this->chunkQualityAnalyzer->analyze($text, is_array($metadata) ? $metadata : []);
 
         return [
             'id' => (string) ($vector['id'] ?? ''),
@@ -204,7 +214,8 @@ class PineconeDocumentInspector
             'pageNumbers' => $pageNumbers,
             'dimension' => is_array($values) ? count($values) : 0,
             'metadata' => is_array($metadata) ? $metadata : [],
-            'text' => is_string($metadata['text'] ?? null) ? $metadata['text'] : null,
+            'text' => $text,
+            'quality' => $quality,
             'raw' => $vector,
         ];
     }

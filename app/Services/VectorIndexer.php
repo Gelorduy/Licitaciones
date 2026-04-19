@@ -158,6 +158,42 @@ class VectorIndexer
             }
         }
 
+        foreach ($metadata as $key => $value) {
+            if ($value === null) {
+                unset($metadata[$key]);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $normalizedList = array_values(array_filter(array_map(static fn (mixed $item): ?string => is_scalar($item) ? trim((string) $item) : null, $value), static fn (?string $item): bool => is_string($item) && $item !== ''));
+
+                if ($normalizedList === []) {
+                    unset($metadata[$key]);
+                    continue;
+                }
+
+                $metadata[$key] = $normalizedList;
+                continue;
+            }
+
+            if (is_bool($value) || is_int($value) || is_float($value)) {
+                continue;
+            }
+
+            if (is_scalar($value)) {
+                $normalizedValue = trim((string) $value);
+                if ($normalizedValue === '') {
+                    unset($metadata[$key]);
+                    continue;
+                }
+
+                $metadata[$key] = $normalizedValue;
+                continue;
+            }
+
+            unset($metadata[$key]);
+        }
+
         return $metadata;
     }
 
