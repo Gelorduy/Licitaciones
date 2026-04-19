@@ -47,7 +47,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
             return;
         }
 
-        [$disk, $path] = $this->resolveStorageInfo($document);
+        [$disk, $path, $sourceFileAvailable] = $this->resolveStorageInfo($document);
 
         if (! $path) {
             return;
@@ -79,6 +79,7 @@ class ProcessUploadedPdfJob implements ShouldQueue
             'document_type' => $this->documentType,
             'disk' => $disk,
             'storage_path' => $path,
+            'source_file_available' => $sourceFileAvailable,
         ]);
 
         $jobStatus = 'completed';
@@ -86,6 +87,10 @@ class ProcessUploadedPdfJob implements ShouldQueue
         $pendingException = null;
 
         try {
+            if (! $sourceFileAvailable) {
+                throw new \RuntimeException('Source PDF not found on configured storage disks: '.$path);
+            }
+
             $binary = Storage::disk($disk)->get($path);
             $tmp = tempnam(sys_get_temp_dir(), 'pdf_');
             file_put_contents($tmp, $binary);
@@ -287,12 +292,12 @@ class ProcessUploadedPdfJob implements ShouldQueue
         };
 
         if (! $path) {
-            return ['s3', null];
+            return ['s3', null, false];
         }
 
         try {
             if (Storage::disk('s3')->exists($path)) {
-                return ['s3', $path];
+                return ['s3', $path, true];
             }
         } catch (\Throwable) {
             // Ignore S3 availability issues and continue with fallback disk detection.
@@ -300,13 +305,13 @@ class ProcessUploadedPdfJob implements ShouldQueue
 
         try {
             if (Storage::disk('public')->exists($path)) {
-                return ['public', $path];
+                return ['public', $path, true];
             }
         } catch (\Throwable) {
             // Keep default behavior below if public disk has issues.
         }
 
-        return ['s3', $path];
+        return ['s3', $path, false];
     }
 
     private function applyExtractedMetadata(object $document, array $metadata): void

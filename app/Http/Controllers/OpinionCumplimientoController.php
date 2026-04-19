@@ -94,6 +94,7 @@ class OpinionCumplimientoController extends Controller
                 'rfc' => $company->rfc,
             ],
             'opinion' => $opinion,
+            'fileAvailable' => $this->sourceFileAvailable($opinion->documento_path),
             'fileHistory' => $this->fileHistory($opinion->id),
             'tipos' => ['sat', 'infonavit', 'imss'],
             'estados' => ['positivo', 'negativo', 'pendiente'],
@@ -274,5 +275,30 @@ class OpinionCumplimientoController extends Controller
         }
 
         return 's3';
+    }
+
+    private function sourceFileAvailable(?string $path): bool
+    {
+        if (! $path) {
+            return false;
+        }
+
+        try {
+            if (Storage::disk('s3')->exists($path)) {
+                return true;
+            }
+        } catch (\Throwable) {
+            // Ignore and continue fallback checks.
+        }
+
+        try {
+            if (Storage::disk('public')->exists($path)) {
+                return true;
+            }
+        } catch (\Throwable) {
+            // Ignore and treat as unavailable.
+        }
+
+        return false;
     }
 }
