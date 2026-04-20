@@ -118,3 +118,13 @@ La vista de Pinecone de Acta muestra:
 - paginas de origen por chunk,
 - score heuristico de sospecha por chunk,
 - correcciones manuales por chunk con intento de vision y fallback a OCR dirigido sobre las paginas exactas del chunk.
+
+En hosts CPU-only con Ollama local, la correccion manual por vision esta afinada para enviar una sola imagen reducida por request (ancho cercano a 320px), limites explicitos de `num_ctx` / `num_predict` y un timeout con margen para arranque en frio; sin ese recorte, las paginas notariales completas pueden tardar varios minutos o caer al fallback OCR.
+
+Validacion operativa reciente sobre la ruta real de correccion por chunk:
+
+- motor: `qwen2.5vl:3b`
+- imagen enviada: 1 pagina reducida (`~320px`, base64 aproximado de 8 KB)
+- limites multimodales: `num_ctx=1024`, `num_predict=384`
+- tiempo observado en contenedor real: ~31.5 segundos
+- resultado: la correccion por vision devolvio texto util y ya no dependio del fallback OCR como comportamiento por defecto para ese flujo.

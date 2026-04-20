@@ -64,7 +64,7 @@ class ActaPineconeChunkCorrector
             $visionFailure = null;
 
             try {
-                $pageImagesPayload = $this->documentTextExtractor->extractPageImages($tmp, $pageNumbers);
+                $pageImagesPayload = $this->documentTextExtractor->extractPageImages($tmp, $pageNumbers, $this->visionPageImageOptions());
                 $pageImages = $pageImagesPayload['page_images'] ?? [];
 
                 if (is_array($pageImages) && $pageImages !== []) {
@@ -224,17 +224,19 @@ class ActaPineconeChunkCorrector
             throw new RuntimeException('La visión con Ollama está deshabilitada en configuración.');
         }
 
-        $images = array_values(array_filter($visionPages, static fn ($item): bool => is_string($item) && trim($item) !== ''));
+        $maxImages = max((int) config('services.ollama.vision_images_per_request', 1), 1);
+        $images = array_slice(array_values(array_filter($visionPages, static fn ($item): bool => is_string($item) && trim($item) !== '')), 0, $maxImages);
         if ($images === []) {
             throw new RuntimeException('No hay imágenes disponibles para corrección por visión.');
         }
 
         $model = config('services.ollama.vision_model', 'qwen2.5vl:7b');
         $baseUrl = config('services.ollama.base_url', 'http://ollama:11434');
-        $timeout = max(8, min((int) config('services.ollama.vision_timeout', 120), 20));
-        $totalBudgetMs = min(max((int) config('services.ollama.vision_total_budget_ms', 95000), 5000), 22000);
+        $timeout = max(45, min((int) config('services.ollama.vision_timeout', 90), 120));
+        $totalBudgetMs = min(max((int) config('services.ollama.vision_total_budget_ms', 95000), 45000), 130000);
         $maxAttempts = 1;
-        $baseDelayMs = max((int) config('services.ollama.vision_retry_base_delay_ms', 1200), 100);
+        $numCtx = max(512, min((int) config('services.ollama.vision_num_ctx', 1024), 1536));
+        $numPredict = $this->visionNumPredict($currentText);
 
         $prompt = "Analiza estas imágenes de páginas exactas de un acta corporativa mexicana.\n"
             ."Objetivo: corregir el fragmento OCR actual usando SOLO evidencia visible en las imágenes.\n"
@@ -268,6 +270,8 @@ class ActaPineconeChunkCorrector
                     'format' => 'json',
                     'options' => [
                         'temperature' => 0,
+                        'num_ctx' => $numCtx,
+                        'num_predict' => $numPredict,
                     ],
                 ]);
 
@@ -290,6 +294,8 @@ class ActaPineconeChunkCorrector
                                     'engine' => 'ollama-vision',
                                     'attempts' => $attempt,
                                     'images_used' => count($images),
+                                    'num_ctx' => $numCtx,
+                                    'num_predict' => $numPredict,
                                     'elapsed_ms' => (int) floor((microtime(true) - $startedAt) * 1000),
                                     'error' => null,
                                 ],
@@ -304,16 +310,6 @@ class ActaPineconeChunkCorrector
                 }
             }
 
-            if ($attempt < $maxAttempts) {
-                $delayMs = $baseDelayMs * (2 ** ($attempt - 1));
-                $elapsedAfterAttemptMs = (int) floor((microtime(true) - $startedAt) * 1000);
-                if (($totalBudgetMs - $elapsedAfterAttemptMs) <= $delayMs) {
-                    $lastError = $lastError ?? 'vision_budget_exhausted';
-                    break;
-                }
-
-                usleep($delayMs * 1000);
-            }
         }
 
         throw new RuntimeException('La corrección por visión falló: '.($lastError ?? 'vision_failed'));
@@ -444,6 +440,23 @@ class ActaPineconeChunkCorrector
         if ($correctedLength > $maxLength) {
             throw new RuntimeException('La corrección devolvió demasiado texto y parece fuera del chunk solicitado.');
         }
+    }
+
+    private function visionPageImageOptions(): array
+    {
+        return [
+            'max_width' => max(280, min((int) config('services.ollama.vision_image_max_width', 320), 480)),
+            'quality' => max(35, min((int) config('services.ollama.vision_image_quality', 55), 80)),
+            'dpi' => max(72, min((int) config('services.ollama.vision_image_dpi', 72), 120)),
+        ];
+    }
+
+    private function visionNumPredict(string $currentText): int
+    {
+        $configuredMax = max(192, min((int) config('services.ollama.vision_max_output_tokens', 384), 512));
+        $estimated = (int) ceil(mb_strlen($currentText) / 4) + 96;
+
+        return max(192, min($estimated, $configuredMax));
     }
 
     private function normalizeSimilarityText(string $text): string

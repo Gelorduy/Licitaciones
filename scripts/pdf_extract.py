@@ -429,13 +429,14 @@ def extract_pages_as_base64(
     page_numbers: list[int],
     max_width: int = 1400,
     quality: int = 70,
+    dpi: int = 180,
 ) -> list[str]:
     if not page_numbers:
         return []
 
     base64_images: list[str] = []
     for page_number in page_numbers:
-        images = convert_from_path(pdf_path, dpi=180, first_page=page_number, last_page=page_number)
+        images = convert_from_path(pdf_path, dpi=dpi, first_page=page_number, last_page=page_number)
         if not images:
             continue
 

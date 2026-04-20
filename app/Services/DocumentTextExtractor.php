@@ -123,6 +123,9 @@ class DocumentTextExtractor
         $script = base_path('scripts/pdf_page_images.py');
         $timeoutSeconds = 120;
         $pageNumbers = array_values(array_unique(array_filter(array_map(static fn ($item) => is_numeric($item) ? (int) $item : null, $pageNumbers), static fn ($item) => is_int($item) && $item > 0)));
+        $maxWidth = max(240, min((int) ($options['max_width'] ?? config('services.ocr.vision_max_width', 1400)), 1600));
+        $quality = max(35, min((int) ($options['quality'] ?? config('services.ocr.vision_quality', 70)), 90));
+        $dpi = max(72, min((int) ($options['dpi'] ?? config('services.ollama.vision_image_dpi', 72)), 180));
 
         if ($pageNumbers === []) {
             return [
@@ -140,14 +143,18 @@ class DocumentTextExtractor
             $script,
             $pdfPath,
             implode(',', $pageNumbers),
-            (string) max((int) config('services.ocr.vision_max_width', 1400), 800),
-            (string) max((int) config('services.ocr.vision_quality', 70), 40),
+            (string) $maxWidth,
+            (string) $quality,
+            (string) $dpi,
         ];
 
         $this->trace($options, 'ocr.page_images.start', [
             'script' => $script,
             'pdf_path' => $pdfPath,
             'page_numbers' => $pageNumbers,
+            'max_width' => $maxWidth,
+            'quality' => $quality,
+            'dpi' => $dpi,
             'command' => $command,
             'timeout_seconds' => $timeoutSeconds,
         ]);

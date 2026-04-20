@@ -76,6 +76,11 @@ return [
         'vision_retry_attempts' => (int) env('OLLAMA_VISION_RETRY_ATTEMPTS', 2),
         'vision_retry_base_delay_ms' => (int) env('OLLAMA_VISION_RETRY_BASE_DELAY_MS', 1200),
         'vision_images_per_request' => (int) env('OLLAMA_VISION_IMAGES_PER_REQUEST', 2),
+        'vision_image_max_width' => (int) env('OLLAMA_VISION_IMAGE_MAX_WIDTH', 320),
+        'vision_image_quality' => (int) env('OLLAMA_VISION_IMAGE_QUALITY', 55),
+        'vision_image_dpi' => (int) env('OLLAMA_VISION_IMAGE_DPI', 72),
+        'vision_num_ctx' => (int) env('OLLAMA_VISION_NUM_CTX', 1024),
+        'vision_max_output_tokens' => (int) env('OLLAMA_VISION_MAX_OUTPUT_TOKENS', 384),
         'extraction_timeout' => (int) env('OLLAMA_EXTRACTION_TIMEOUT', 300),
     ],
 

@@ -28,13 +28,14 @@ def parse_page_numbers(raw_value: str) -> list[int]:
 
 def main() -> int:
     if len(sys.argv) < 3:
-        print(json.dumps({"error": "Usage: pdf_page_images.py <pdf_path> <page_numbers_csv> [max_width] [quality]"}))
+        print(json.dumps({"error": "Usage: pdf_page_images.py <pdf_path> <page_numbers_csv> [max_width] [quality] [dpi]"}))
         return 1
 
     pdf_path = sys.argv[1]
     page_numbers = parse_page_numbers(sys.argv[2])
     max_width = int(sys.argv[3]) if len(sys.argv) > 3 else 1400
     quality = int(sys.argv[4]) if len(sys.argv) > 4 else 70
+    dpi = int(sys.argv[5]) if len(sys.argv) > 5 else 180
 
     if not os.path.exists(pdf_path):
         print(json.dumps({"error": f"File not found: {pdf_path}"}))
@@ -50,6 +51,7 @@ def main() -> int:
             page_numbers=page_numbers,
             max_width=max_width,
             quality=quality,
+            dpi=dpi,
         )
         print(json.dumps({"page_images": images, "page_numbers": page_numbers}, ensure_ascii=False))
         return 0
